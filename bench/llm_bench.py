@@ -16,7 +16,6 @@ token-identical to the single-node reference.
 import argparse
 import json
 import re
-import shutil
 import socket
 import sys
 import time
@@ -26,10 +25,10 @@ from pathlib import Path
 
 import mlx.core as mx
 from mlx_lm import batch_generate, load, stream_generate
-from mlx_lm.utils import hf_repo_to_path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from swarm.pipeline import apply_pipeline, barrier, parse_split  # noqa: E402
+from swarm.resources import ResourceError, default_budget_gb, guard_resources, num_layers  # noqa: E402
 
 REF_PROMPT = (
     "Explain, step by step, why the sky appears blue during the day "
@@ -40,61 +39,6 @@ REF_TOKENS = 64
 
 def model_slug(model: str) -> str:
     return re.sub(r"[^A-Za-z0-9._-]+", "_", Path(model).name or model)
-
-
-def weight_bytes(model: str) -> tuple[int, bool]:
-    """Total safetensors size of a local dir or HF repo, and whether it is on disk."""
-    path = Path(model)
-    if path.exists():
-        return sum(f.stat().st_size for f in path.glob("model*.safetensors")), True
-    try:
-        return sum(f.stat().st_size for f in hf_repo_to_path(model).glob("model*.safetensors")), True
-    except Exception:
-        pass
-    from huggingface_hub import HfApi
-
-    info = HfApi().model_info(model, files_metadata=True)
-    return sum(
-        s.size or 0
-        for s in info.siblings
-        if s.rfilename.startswith("model") and s.rfilename.endswith(".safetensors")
-    ), False
-
-
-def num_layers(model: str) -> int | None:
-    path = Path(model)
-    if not path.exists():
-        try:
-            path = hf_repo_to_path(model)
-        except Exception:
-            return None
-    config = json.loads((path / "config.json").read_text())
-    return config.get("num_hidden_layers") or config.get("text_config", {}).get("num_hidden_layers")
-
-
-def guard_resources(model: str, fraction: float, budget_gb: float, min_free_disk_gb: float):
-    """Refuse to run when the shard would not fit comfortably in memory, or when
-    the disk is too full for macOS to grow swap (both have frozen the machine)."""
-    gb = 2**30
-    weights, on_disk = weight_bytes(model)
-    shard = weights * fraction / gb
-    free_disk = shutil.disk_usage(Path.home()).free / gb
-    if not on_disk:
-        free_disk -= weights / gb
-    problems = []
-    if shard > budget_gb:
-        problems.append(f"weights per rank {shard:.1f} GB > memory budget {budget_gb:.1f} GB")
-    if free_disk < min_free_disk_gb:
-        problems.append(
-            f"free disk {'after download ' if not on_disk else ''}{free_disk:.1f} GB "
-            f"< {min_free_disk_gb:.0f} GB (needed for swap headroom)"
-        )
-    if problems:
-        sys.exit("refusing to run: " + "; ".join(problems))
-    # Hard cap for MLX allocations; leave the rest for the OS and other apps.
-    mx.set_memory_limit(int(budget_gb * gb))
-    mx.set_cache_limit(int(2 * gb))
-    return shard
 
 
 def load_model(model_path: str, group, split: str | None):
@@ -169,7 +113,7 @@ def main():
         budgets = [float(x) for x in args.mem_budget_gb.split(",")]
         budget = budgets[rank] if len(budgets) > 1 else budgets[0]
     else:
-        budget = 0.6 * mx.device_info()["max_recommended_working_set_size"] / 2**30
+        budget = default_budget_gb()
     if size > 1 and len(set(mx.distributed.all_gather(
         mx.array([zlib.crc32(socket.gethostname().encode()) % 2**31]), group=group, stream=mx.cpu
     ).tolist())) == 1:
@@ -180,7 +124,10 @@ def main():
     if size > 1 and (n := num_layers(args.model)):
         start, end = parse_split(args.split, n, size)[rank]
         fraction = (end - start) / n
-    shard_gb = guard_resources(args.model, fraction, budget, args.min_free_disk_gb)
+    try:
+        shard_gb = guard_resources(args.model, fraction, budget, args.min_free_disk_gb)
+    except ResourceError as e:
+        sys.exit(f"refusing to run: {e}")
     print(f"[rank {rank} {socket.gethostname()}] weights ~{shard_gb:.1f} GB, "
           f"MLX memory limit {budget:.1f} GB", flush=True)
 
