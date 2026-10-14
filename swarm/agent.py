@@ -7,6 +7,10 @@ can stop routing to a node under memory pressure). A worker that crashes after
 it was serving is restarted a limited number of times; one that fails to start
 (for example, the memory guard refused the model) is not.
 
+While the worker is up, the agent also pulls batch tasks for its model from
+the coordinator (``--job-slots`` at a time, 0 to disable), runs them against
+the local worker and posts the results with the lease's fencing token.
+
 Arguments the agent does not know are passed to the worker:
 
     swarm agent --coordinator http://169.254.184.67:8000 --model models/Qwen3-8B-4bit \\
@@ -23,6 +27,7 @@ import signal
 import socket
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 from urllib.parse import urlparse
@@ -34,6 +39,8 @@ log = logging.getLogger("swarm.agent")
 LOAD_TIMEOUT_S = 600
 MAX_RESTARTS = 3
 RESTART_WINDOW_S = 600
+JOB_POLL_S = 2.0
+TASK_TIMEOUT_S = 900
 
 
 def advertise_ip(coordinator_url: str) -> str:
@@ -92,6 +99,9 @@ class Agent:
         self.restarts: list[float] = []
         self.stopping = False
         self.registered = False
+        self.ready = threading.Event()  # worker is serving
+        self.leases: dict[int, dict] = {}  # task_id -> {"task_id", "token"}
+        self.leases_lock = threading.Lock()
 
     # -- worker process -------------------------------------------------
     def start_worker(self) -> None:
@@ -184,9 +194,79 @@ class Agent:
             pass
         self.registered = False
 
+    # -- batch tasks ----------------------------------------------------
+    def job_loop(self) -> None:
+        """Lease tasks while slots are free; each runs in its own thread."""
+        http = httpx.Client(timeout=10.0)
+        next_renew = 0.0
+        while not self.stopping:
+            if not (self.ready.is_set() and self.registered):
+                time.sleep(1)
+                continue
+            with self.leases_lock:
+                held = list(self.leases.values())
+            if held and time.monotonic() >= next_renew:
+                next_renew = time.monotonic() + held[0]["lease_s"] / 3
+                try:
+                    r = http.post(self.coordinator + "/internal/tasks/renew",
+                                  json={"node_id": self.node_id, "leases": held})
+                    for task_id in r.json().get("lost", []):
+                        log.warning("lost lease on task %s; its result will be discarded", task_id)
+                except (httpx.HTTPError, ValueError) as e:
+                    log.warning("lease renewal failed: %r", e)
+            free = self.args.job_slots - len(held)
+            tasks = []
+            if free > 0:
+                try:
+                    r = http.post(self.coordinator + "/internal/tasks/lease",
+                                  json={"node_id": self.node_id, "max": free})
+                    tasks = r.json().get("tasks", []) if r.status_code == 200 else []
+                except (httpx.HTTPError, ValueError) as e:
+                    log.warning("lease failed: %r", e)
+            for t in tasks:
+                with self.leases_lock:
+                    self.leases[t["task_id"]] = {"task_id": t["task_id"], "token": t["token"],
+                                                 "lease_s": t["lease_s"]}
+                threading.Thread(target=self.run_task, args=(t,), daemon=True).start()
+            if not tasks:
+                time.sleep(JOB_POLL_S)
+
+    def run_task(self, task: dict) -> None:
+        task_id, token = task["task_id"], task["token"]
+        report = {"node_id": self.node_id, "token": token}
+        try:
+            try:
+                r = httpx.post(self.local_url + task["url"],
+                               json={**task["body"], "model": "default_model"},
+                               timeout=TASK_TIMEOUT_S)
+                if r.status_code == 200:
+                    path, report = "complete", {**report, "result": r.json(), "model": self.model_name}
+                else:
+                    # 4xx is the request's fault (no point retrying); 5xx may be transient.
+                    path, report = "fail", {**report, "error": f"HTTP {r.status_code}: {r.text[:500]}",
+                                            "retryable": r.status_code >= 500}
+            except (httpx.HTTPError, ValueError) as e:
+                path, report = "fail", {**report, "error": repr(e), "retryable": True}
+            for _ in range(3):  # the coordinator may be restarting
+                try:
+                    resp = httpx.post(f"{self.coordinator}/internal/tasks/{task_id}/{path}",
+                                      json=report, timeout=10)
+                    if resp.status_code == 409:
+                        log.warning("task %s: %s", task_id, resp.json()["error"]["message"])
+                    break
+                except httpx.HTTPError as e:
+                    log.warning("reporting task %s failed: %r", task_id, e)
+                    time.sleep(2)
+            log.info("task %s %s", task_id, "done" if path == "complete" else "failed")
+        finally:
+            with self.leases_lock:
+                self.leases.pop(task_id, None)
+
     # -- main loop ------------------------------------------------------
     def run(self) -> int:
         signal.signal(signal.SIGTERM, lambda *_: setattr(self, "stopping", True))
+        if self.args.job_slots > 0:
+            threading.Thread(target=self.job_loop, daemon=True).start()
         try:
             while not self.stopping:
                 self.start_worker()
@@ -196,9 +276,11 @@ class Agent:
                     log.error("worker did not become ready (exit code %s); not restarting",
                               self.proc.poll())
                     return 1
+                self.ready.set()
                 while not self.stopping and self.proc.poll() is None:
                     self.heartbeat()
                     time.sleep(self.args.heartbeat)
+                self.ready.clear()
                 if self.stopping:
                     break
                 self.deregister()
@@ -226,6 +308,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--advertise-host", default=None, help="IP the coordinator reaches the worker on")
     parser.add_argument("--speed", type=float, default=None, help="relative decode speed; default: probe")
     parser.add_argument("--heartbeat", type=float, default=5.0)
+    parser.add_argument("--job-slots", type=int, default=2,
+                        help="batch tasks run concurrently on this node (0: no batch work)")
     args, worker_args = parser.parse_known_args(argv)
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(message)s")
     sys.exit(Agent(args, worker_args).run())

@@ -5,7 +5,10 @@ OpenAI endpoints and are routed to a healthy worker serving the requested
 model (see ``swarm.router``). If a worker cannot be reached, or fails before
 sending a response, the request is retried once on another node.
 
-    swarm coordinator --host 0.0.0.0 --port 8000
+Batch jobs (``/v1/jobs``) go into a SQLite queue (see ``swarm.jobs``); agents
+lease tasks for the model they serve and post results back.
+
+    swarm coordinator --host 0.0.0.0 --port 8000 --db jobs.sqlite3
 """
 
 from __future__ import annotations
@@ -18,8 +21,9 @@ from contextlib import asynccontextmanager
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, Response, StreamingResponse
+from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
 
+from swarm.jobs import JobError, JobStore
 from swarm.router import NoNodeAvailable, Registry
 
 log = logging.getLogger("swarm.coordinator")
@@ -33,9 +37,11 @@ def error(status: int, message: str, kind: str = "invalid_request_error") -> JSO
     return JSONResponse({"error": {"message": message, "type": kind}}, status_code=status)
 
 
-def create_app(registry: Registry | None = None, client: httpx.AsyncClient | None = None) -> FastAPI:
+def create_app(registry: Registry | None = None, client: httpx.AsyncClient | None = None,
+               store: JobStore | None = None) -> FastAPI:
     reg = registry or Registry()
     http = client or httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
+    jobs = store or JobStore()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -44,6 +50,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
 
     app = FastAPI(title="mlx-swarm coordinator", lifespan=lifespan)
     app.state.registry = reg
+    app.state.jobs = jobs
 
     @app.post("/internal/nodes/register")
     async def register(body: dict):
@@ -174,6 +181,74 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
     async def completions(request: Request):
         return await proxy(request, "/v1/completions")
 
+    # -- batch jobs: clients ------------------------------------------------
+    @app.post("/v1/jobs")
+    async def submit_job(body: dict):
+        try:
+            job_id, created = jobs.submit(
+                body.get("tasks") or [],
+                model=body.get("model"),
+                max_attempts=int(body.get("max_attempts", 3)),
+                idempotency_key=body.get("idempotency_key"),
+                metadata=body.get("metadata"),
+            )
+        except (JobError, TypeError) as e:
+            return error(400, str(e))
+        log.info("job %s %s", job_id, "created" if created else "already exists (idempotency key)")
+        return JSONResponse(jobs.job(job_id), status_code=201 if created else 200)
+
+    @app.get("/v1/jobs")
+    async def list_jobs(limit: int = 20):
+        return {"object": "list", "data": jobs.jobs(limit)}
+
+    @app.get("/v1/jobs/{job_id}")
+    async def get_job(job_id: str):
+        return jobs.job(job_id) or error(404, f"no job {job_id}")
+
+    @app.get("/v1/jobs/{job_id}/results")
+    async def job_results(job_id: str):
+        if jobs.job(job_id) is None:
+            return error(404, f"no job {job_id}")
+        lines = (json.dumps(r, ensure_ascii=False) + "\n" for r in jobs.results(job_id))
+        return PlainTextResponse("".join(lines), media_type="application/jsonl")
+
+    @app.post("/v1/jobs/{job_id}/cancel")
+    async def cancel_job(job_id: str):
+        if jobs.job(job_id) is None:
+            return error(404, f"no job {job_id}")
+        jobs.cancel(job_id)
+        return jobs.job(job_id)
+
+    # -- batch jobs: agents -------------------------------------------------
+    @app.post("/internal/tasks/lease")
+    async def lease_tasks(body: dict):
+        node = reg.nodes.get(body["node_id"])
+        if node is None:
+            return error(404, f"unknown node {body['node_id']}; register first")
+        if not node.healthy(reg.clock()):
+            return {"tasks": []}
+        return {"tasks": jobs.lease(node.node_id, node.model, int(body.get("max", 1)))}
+
+    @app.post("/internal/tasks/renew")
+    async def renew_tasks(body: dict):
+        return {"lost": jobs.renew(body["node_id"], body.get("leases") or [])}
+
+    @app.post("/internal/tasks/{task_id}/complete")
+    async def complete_task(task_id: int, body: dict):
+        result = body["result"]
+        if isinstance(result, dict) and result.get("model") == WORKER_MODEL:
+            result["model"] = body.get("model") or result["model"]
+        if not jobs.complete(task_id, body["token"], body["node_id"], result):
+            return error(409, "stale fencing token; result discarded", "conflict")
+        return {"ok": True}
+
+    @app.post("/internal/tasks/{task_id}/fail")
+    async def fail_task(task_id: int, body: dict):
+        if not jobs.fail(task_id, body["token"], body["node_id"], body.get("error", ""),
+                         bool(body.get("retryable", True))):
+            return error(409, "stale fencing token", "conflict")
+        return {"ok": True}
+
     return app
 
 
@@ -185,10 +260,12 @@ def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="swarm coordinator", description=__doc__.splitlines()[0])
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
+    parser.add_argument("--db", default="jobs.sqlite3", help="batch job queue (SQLite file)")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(message)s")
-    uvicorn.run(create_app(), host=args.host, port=args.port, log_level=args.log_level)
+    app = create_app(store=JobStore(args.db))
+    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
 
 
 if __name__ == "__main__":

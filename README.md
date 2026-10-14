@@ -10,6 +10,9 @@ uv sync          # uses the Tsinghua PyPI mirror configured in pyproject.toml
 uv run swarm     # list commands
 ```
 
+- `swarm coordinator` / `swarm agent`: OpenAI-compatible pool with routing and failover
+- `swarm jobs submit tasks.jsonl --wait`: batch queue with leases, fencing tokens and retries
+
 ## License
 
 Apache License 2.0, see [LICENSE](LICENSE).

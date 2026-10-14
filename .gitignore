@@ -7,3 +7,4 @@ models/
 .DS_Store
 *.egg-info/
 docs/
+jobs.sqlite3*
