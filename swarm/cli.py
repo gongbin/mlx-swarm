@@ -7,25 +7,36 @@
     swarm chat "prompt" [--model NAME]                 one streaming request
     swarm jobs submit FILE.jsonl [--model M] [--wait]  batch job (OpenAI Batch input format)
     swarm jobs list | status ID | results ID [-o F] | cancel ID
+    swarm discover                                     find coordinators via mDNS
+    swarm service install|uninstall|status ROLE ...    run as a launchd login agent
+
+Without --coordinator, commands use $SWARM_COORDINATOR, a coordinator on this
+Mac, or the one advertised on the local network (mDNS).
 """
 
 from __future__ import annotations
 
 import argparse
 import json
-import os
 import sys
 
-DEFAULT_COORDINATOR = os.environ.get("SWARM_COORDINATOR", "http://127.0.0.1:8000")
+def coordinator_url(value: str | None) -> str:
+    """--coordinator, $SWARM_COORDINATOR, this Mac's coordinator, or one found via mDNS."""
+    from swarm.discovery import NotFound, resolve
+
+    try:
+        return resolve(value)
+    except NotFound as e:
+        sys.exit(str(e))
 
 
 def nodes(argv: list[str]) -> None:
     import httpx
 
     parser = argparse.ArgumentParser(prog="swarm nodes")
-    parser.add_argument("--coordinator", default=DEFAULT_COORDINATOR)
+    parser.add_argument("--coordinator", default=None, help="default: auto-discover")
     args = parser.parse_args(argv)
-    data = httpx.get(args.coordinator.rstrip("/") + "/nodes", timeout=5).json()["nodes"]
+    data = httpx.get(coordinator_url(args.coordinator) + "/nodes", timeout=5).json()["nodes"]
     if not data:
         print("no nodes registered")
         return
@@ -49,7 +60,7 @@ def chat(argv: list[str]) -> None:
     parser.add_argument("--model", default=None)
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--session", default=None)
-    parser.add_argument("--coordinator", default=DEFAULT_COORDINATOR)
+    parser.add_argument("--coordinator", default=None, help="default: auto-discover")
     args = parser.parse_args(argv)
     body = {
         "messages": [{"role": "user", "content": args.prompt}],
@@ -59,7 +70,7 @@ def chat(argv: list[str]) -> None:
     if args.model:
         body["model"] = args.model
     headers = {"x-session-id": args.session} if args.session else {}
-    url = args.coordinator.rstrip("/") + "/v1/chat/completions"
+    url = coordinator_url(args.coordinator) + "/v1/chat/completions"
     with httpx.stream("POST", url, json=body, headers=headers, timeout=600) as r:
         if r.status_code != 200:
             r.read()
@@ -104,7 +115,7 @@ def jobs(argv: list[str]) -> None:
     import httpx
 
     parser = argparse.ArgumentParser(prog="swarm jobs")
-    parser.add_argument("--coordinator", default=DEFAULT_COORDINATOR)
+    parser.add_argument("--coordinator", default=None, help="default: auto-discover")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("submit")
     p.add_argument("file")
@@ -120,7 +131,7 @@ def jobs(argv: list[str]) -> None:
     p.add_argument("id")
     p.add_argument("-o", "--output", default=None)
     args = parser.parse_args(argv)
-    base = args.coordinator.rstrip("/") + "/v1/jobs"
+    base = coordinator_url(args.coordinator) + "/v1/jobs"
 
     def call(method, url, **kw):
         r = httpx.request(method, url, timeout=60, **kw)
@@ -166,6 +177,22 @@ def jobs(argv: list[str]) -> None:
         print_job(call("POST", f"{base}/{args.id}/cancel").json())
 
 
+def discover(argv: list[str]) -> None:
+    from swarm.discovery import browse, reachable
+
+    parser = argparse.ArgumentParser(prog="swarm discover")
+    parser.add_argument("--timeout", type=float, default=3.0)
+    args = parser.parse_args(argv)
+    services = browse(args.timeout)
+    if not services:
+        sys.exit("no coordinator found via mDNS")
+    for s in services:
+        print(s["name"])
+        for ip in s["addresses"]:
+            url = f"http://{ip}:{s['port']}"
+            print(f"  {url}  {'ok' if reachable(url) else 'unreachable'}")
+
+
 def main() -> None:
     commands = {
         "coordinator": lambda argv: __import__("swarm.coordinator").coordinator.main(argv),
@@ -174,6 +201,8 @@ def main() -> None:
         "nodes": nodes,
         "chat": chat,
         "jobs": jobs,
+        "discover": discover,
+        "service": lambda argv: __import__("swarm.service").service.main(argv),
     }
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         sys.exit(__doc__)

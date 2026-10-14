@@ -8,6 +8,9 @@ sending a response, the request is retried once on another node.
 Batch jobs (``/v1/jobs``) go into a SQLite queue (see ``swarm.jobs``); agents
 lease tasks for the model they serve and post results back.
 
+The coordinator advertises itself on mDNS (``_mlxswarm._tcp``), so agents and
+the CLI find it without an address (see ``swarm.discovery``).
+
     swarm coordinator --host 0.0.0.0 --port 8000 --db jobs.sqlite3
 """
 
@@ -261,11 +264,25 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument("--db", default="jobs.sqlite3", help="batch job queue (SQLite file)")
+    parser.add_argument("--name", default=None, help="mDNS service name; default: short hostname")
+    parser.add_argument("--no-mdns", action="store_true", help="do not advertise on the local network")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(message)s")
     app = create_app(store=JobStore(args.db))
-    uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    advertiser = None
+    if not args.no_mdns:
+        from swarm.discovery import Advertiser
+
+        try:
+            advertiser = Advertiser(args.port, args.name)
+        except OSError as e:  # e.g. macOS local-network permission
+            log.warning("mDNS advertising failed (%r); clients need --coordinator", e)
+    try:
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+    finally:
+        if advertiser:
+            advertiser.close()
 
 
 if __name__ == "__main__":

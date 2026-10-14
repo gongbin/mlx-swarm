@@ -11,10 +11,14 @@ While the worker is up, the agent also pulls batch tasks for its model from
 the coordinator (``--job-slots`` at a time, 0 to disable), runs them against
 the local worker and posts the results with the lease's fencing token.
 
+Without ``--coordinator`` the agent finds the coordinator via mDNS and looks
+again if it stops answering (e.g. it moved to another Mac). While running, the
+agent holds a power assertion so the Mac does not idle-sleep (``--allow-sleep``
+to disable): a sleeping node drops its Thunderbolt link and its leases.
+
 Arguments the agent does not know are passed to the worker:
 
-    swarm agent --coordinator http://169.254.184.67:8000 --model models/Qwen3-8B-4bit \\
-        --mem-budget-gb 7 --decode-concurrency 4
+    swarm agent --model models/Qwen3-8B-4bit --mem-budget-gb 7 --decode-concurrency 4
 """
 
 from __future__ import annotations
@@ -22,6 +26,7 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import re
 import signal
 import socket
@@ -34,12 +39,15 @@ from urllib.parse import urlparse
 
 import httpx
 
+from swarm.discovery import NotFound, resolve
+
 log = logging.getLogger("swarm.agent")
 
 LOAD_TIMEOUT_S = 600
 MAX_RESTARTS = 3
 RESTART_WINDOW_S = 600
 JOB_POLL_S = 2.0
+REDISCOVER_AFTER = 3  # consecutive failed heartbeats before looking for the coordinator again
 TASK_TIMEOUT_S = 900
 
 
@@ -88,20 +96,54 @@ class Agent:
     def __init__(self, args, worker_args: list[str]):
         self.args = args
         self.worker_args = worker_args
-        self.coordinator = args.coordinator.rstrip("/")
-        self.host = args.advertise_host or advertise_ip(self.coordinator)
-        self.worker_url = f"http://{self.host}:{args.port}"
+        self.stopping = False
+        self.auto = not (args.coordinator or os.environ.get("SWARM_COORDINATOR"))
+        self.set_coordinator(self.find_coordinator())
         self.local_url = f"http://127.0.0.1:{args.port}"
         self.model_name = args.served_name or Path(args.model.rstrip("/")).name
         self.node_id = args.node_id or socket.gethostname().split(".")[0]
         self.http = httpx.Client(timeout=10.0)
         self.proc: subprocess.Popen | None = None
         self.restarts: list[float] = []
-        self.stopping = False
         self.registered = False
+        self.failed_heartbeats = 0
         self.ready = threading.Event()  # worker is serving
         self.leases: dict[int, dict] = {}  # task_id -> {"task_id", "token"}
         self.leases_lock = threading.Lock()
+
+    # -- coordinator discovery ------------------------------------------
+    def find_coordinator(self) -> str:
+        while True:
+            try:
+                return resolve(self.args.coordinator, allow_local=False)
+            except NotFound as e:
+                if self.stopping:
+                    raise
+                log.warning("%s; retrying in 10s", e)
+                time.sleep(10)
+
+    def set_coordinator(self, url: str) -> None:
+        self.coordinator = url
+        self.host = self.args.advertise_host or advertise_ip(url)
+        self.worker_url = f"http://{self.host}:{self.args.port}"
+        log.info("coordinator %s; worker advertised as %s", url, self.worker_url)
+
+    def rediscover(self) -> None:
+        try:
+            url = resolve(None, allow_local=False)
+        except NotFound as e:
+            log.warning("coordinator unreachable and %s", e)
+            return
+        if url != self.coordinator:
+            self.set_coordinator(url)
+            self.registered = False
+
+    def keep_awake(self) -> None:
+        """Prevent idle sleep for as long as this process lives."""
+        try:
+            subprocess.Popen(["caffeinate", "-i", "-w", str(os.getpid())])
+        except OSError as e:
+            log.warning("could not start caffeinate: %r", e)
 
     # -- worker process -------------------------------------------------
     def start_worker(self) -> None:
@@ -174,18 +216,24 @@ class Agent:
         return self.registered
 
     def heartbeat(self) -> None:
-        if not self.registered:
-            self.register()
-            return
-        try:
-            r = self.http.post(
-                f"{self.coordinator}/internal/nodes/{self.node_id}/heartbeat",
-                json={"memory_free_pct": memory_free_pct()},
-            )
-            if r.status_code == 404:  # coordinator restarted and forgot us
-                self.register()
-        except httpx.HTTPError as e:
-            log.warning("heartbeat failed: %r", e)
+        if self.registered:
+            try:
+                r = self.http.post(
+                    f"{self.coordinator}/internal/nodes/{self.node_id}/heartbeat",
+                    json={"memory_free_pct": memory_free_pct()},
+                )
+                if r.status_code == 404:  # coordinator restarted and forgot us
+                    self.register()
+                ok = True
+            except httpx.HTTPError as e:
+                log.warning("heartbeat failed: %r", e)
+                ok = False
+        else:
+            ok = self.register()
+        self.failed_heartbeats = 0 if ok else self.failed_heartbeats + 1
+        if self.auto and self.failed_heartbeats >= REDISCOVER_AFTER:
+            self.failed_heartbeats = 0
+            self.rediscover()
 
     def deregister(self) -> None:
         try:
@@ -265,6 +313,8 @@ class Agent:
     # -- main loop ------------------------------------------------------
     def run(self) -> int:
         signal.signal(signal.SIGTERM, lambda *_: setattr(self, "stopping", True))
+        if not self.args.allow_sleep:
+            self.keep_awake()
         if self.args.job_slots > 0:
             threading.Thread(target=self.job_loop, daemon=True).start()
         try:
@@ -300,7 +350,8 @@ class Agent:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(prog="swarm agent", description=__doc__.splitlines()[0])
-    parser.add_argument("--coordinator", required=True, help="e.g. http://169.254.184.67:8000")
+    parser.add_argument("--coordinator", default=None,
+                        help="e.g. http://169.254.184.67:8000; default: $SWARM_COORDINATOR or mDNS")
     parser.add_argument("--model", required=True, help="local model dir or HF repo")
     parser.add_argument("--port", type=int, default=8081, help="worker port")
     parser.add_argument("--node-id", default=None, help="default: short hostname")
@@ -308,6 +359,7 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--advertise-host", default=None, help="IP the coordinator reaches the worker on")
     parser.add_argument("--speed", type=float, default=None, help="relative decode speed; default: probe")
     parser.add_argument("--heartbeat", type=float, default=5.0)
+    parser.add_argument("--allow-sleep", action="store_true", help="do not keep the Mac awake")
     parser.add_argument("--job-slots", type=int, default=2,
                         help="batch tasks run concurrently on this node (0: no batch work)")
     args, worker_args = parser.parse_known_args(argv)
