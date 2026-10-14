@@ -5,6 +5,7 @@ description = "Distributed LLM inference across Apple Silicon Macs on MLX"
 readme = "README.md"
 requires-python = ">=3.11"
 license = "Apache-2.0"
+license-files = ["LICENSE"]
 dependencies = [
     # P 组内所有节点必须使用完全相同的版本
     "mlx==0.32.1",
