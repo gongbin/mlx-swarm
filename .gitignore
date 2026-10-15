@@ -11,3 +11,6 @@ jobs.sqlite3*
 # internal documents (local only)
 doc1.md
 doc2-*.md
+# hostfiles describe real machines (IPs, ssh users); keep them local
+hosts*.json
+!hosts.example.json

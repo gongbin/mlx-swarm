@@ -22,7 +22,7 @@ worker: it plans the layer split from the hostfile's ``mem_budget_gb`` and
 ``mlx.launch``, and registers rank 0 -- which must be this Mac, listed first
 with ``"ssh": "127.0.0.1"`` -- as one node serving the model:
 
-    swarm agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts-cable.json
+    swarm agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json   # see hosts.example.json
 
 Arguments the agent does not know are passed to the worker:
 

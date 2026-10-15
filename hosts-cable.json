@@ -1,4 +1,0 @@
-[
-  {"name": "m5", "ssh": "127.0.0.1", "ips": ["169.254.184.67"], "mem_budget_gb": 20, "bandwidth_gbs": 122},
-  {"name": "mini", "ssh": "gongbin@10.145.1.27", "ips": ["169.254.101.6"], "mem_budget_gb": 8.5, "bandwidth_gbs": 101}
-]
