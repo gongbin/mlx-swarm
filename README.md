@@ -10,7 +10,7 @@ OpenAI-compatible API.
 
 - **One API for many Macs**: any OpenAI SDK works against the cluster. Requests go to the least-loaded Mac, conversations stay on the same machine to reuse its prompt cache, and requests move to another Mac when one fails.
 - **Batch jobs that finish exactly once**: submit thousands of prompts as a JSONL file. Every Mac pulls work at its own pace. Leases, fencing tokens and retries make sure each task's result is saved exactly once, even when a Mac crashes or sleeps mid-task.
-- **Models bigger than one Mac**: pipeline parallelism splits a model by layers across Macs over Thunderbolt or Ethernet, with output identical to a single Mac.
+- **Models bigger than one Mac**: pipeline parallelism splits a model by layers across Macs over Thunderbolt or Ethernet, with output identical to a single Mac. A planner picks the split for Macs of different sizes and speeds and predicts the speed before anything is loaded. The group is served through the same API.
 - **Zero configuration**: the coordinator announces itself over Bonjour (mDNS). Nodes find it on their own, pick the fastest link, and run as login services that restart after a crash.
 - **Safe on shared Macs**: memory and disk checks run before every model load, and memory use is capped below what macOS needs. Nodes stay awake only while they are serving.
 
@@ -19,7 +19,8 @@ OpenAI-compatible API.
 | Component | What it does |
 |---|---|
 | `swarm coordinator` | OpenAI-compatible gateway (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, streaming), node registry, routing and failover, batch job queue (`/v1/jobs`, OpenAI Batch format) |
-| `swarm agent` | Runs on every Mac: starts and supervises an MLX worker, finds the coordinator, reports health, runs batch tasks |
+| `swarm agent` | Runs on every Mac: starts and supervises an MLX worker, finds the coordinator, reports health, runs batch tasks. With `--hostfile` it runs a pipeline group across several Macs as one node |
+| `swarm plan` | Dry run: how a model splits over a group of Macs, memory per Mac, and expected tok/s |
 | `swarm jobs` | Submit, track, cancel and download batch jobs |
 | `swarm service` | Installs the coordinator or an agent as a launchd login service |
 | `swarm nodes` / `chat` / `discover` | Cluster status, quick chat, mDNS lookup |
@@ -33,7 +34,7 @@ uv run swarm chat "Hello" --model Qwen3-8B-4bit
 uv run swarm jobs submit tasks.jsonl --model Qwen3-8B-4bit --wait -o results.jsonl
 ```
 
-Roadmap: pipeline parallelism behind the API (P2), then speculative decoding and continuous batching (P3).
+Roadmap: interleaving several requests in the pipeline and group failover (P2), then speculative decoding and continuous batching (P3).
 
 ## Benchmarks
 

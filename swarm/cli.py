@@ -8,6 +8,7 @@
     swarm jobs submit FILE.jsonl [--model M] [--wait]  batch job (OpenAI Batch input format)
     swarm jobs list | status ID | results ID [-o F] | cancel ID
     swarm discover                                     find coordinators via mDNS
+    swarm plan --model DIR --hostfile H                how a model splits over a pipeline group
     swarm service install|uninstall|status ROLE ...    run as a launchd login agent
 
 Without --coordinator, commands use $SWARM_COORDINATOR, a coordinator on this
@@ -202,6 +203,7 @@ def main() -> None:
         "chat": chat,
         "jobs": jobs,
         "discover": discover,
+        "plan": lambda argv: __import__("swarm.planner").planner.main(argv),
         "service": lambda argv: __import__("swarm.service").service.main(argv),
     }
     if len(sys.argv) < 2 or sys.argv[1] not in commands:

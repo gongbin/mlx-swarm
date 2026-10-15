@@ -16,6 +16,14 @@ again if it stops answering (e.g. it moved to another Mac). While running, the
 agent holds a power assertion so the Mac does not idle-sleep (``--allow-sleep``
 to disable): a sleeping node drops its Thunderbolt link and its leases.
 
+With ``--hostfile`` the agent runs a pipeline group instead of a single
+worker: it plans the layer split from the hostfile's ``mem_budget_gb`` and
+``bandwidth_gbs`` (``swarm plan``), starts the worker on every host through
+``mlx.launch``, and registers rank 0 -- which must be this Mac, listed first
+with ``"ssh": "127.0.0.1"`` -- as one node serving the model:
+
+    swarm agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts-cable.json
+
 Arguments the agent does not know are passed to the worker:
 
     swarm agent --model models/Qwen3-8B-4bit --mem-budget-gb 7 --decode-concurrency 4
@@ -110,6 +118,7 @@ class Agent:
         self.ready = threading.Event()  # worker is serving
         self.leases: dict[int, dict] = {}  # task_id -> {"task_id", "token"}
         self.leases_lock = threading.Lock()
+        self.group: dict | None = None  # pipeline group description, if any
 
     # -- coordinator discovery ------------------------------------------
     def find_coordinator(self) -> str:
@@ -146,14 +155,36 @@ class Agent:
             log.warning("could not start caffeinate: %r", e)
 
     # -- worker process -------------------------------------------------
+    def pipeline_args(self) -> list[str]:
+        """Split and per-rank budgets for a pipeline group, from the hostfile."""
+        from swarm.planner import nodes_from_hostfile, plan, profile_model, report
+
+        nodes = nodes_from_hostfile(self.args.hostfile)
+        extra = []
+        if "--pipeline-split" not in self.worker_args:
+            profile = profile_model(self.args.model)
+            p = plan(profile, nodes, self.args.plan_mode)
+            log.info("pipeline plan:\n%s", report(profile, nodes, p))
+            extra += ["--pipeline-split", p.split]
+            self.group = {"hosts": [n.name for n in nodes], "split": p.split,
+                          "expected_tok_s": round(p.expected_tok_s, 1)}
+        if "--mem-budget-gb" not in self.worker_args:
+            extra += ["--mem-budget-gb", ",".join(f"{n.budget_gb:g}" for n in nodes)]
+        return extra
+
     def start_worker(self) -> None:
-        cmd = [
+        worker = [
             sys.executable, "-m", "swarm.worker",
             "--model", self.args.model,
             "--host", "0.0.0.0",
             "--port", str(self.args.port),
             *self.worker_args,
         ]
+        if self.args.hostfile:
+            launch = str(Path(sys.executable).parent / "mlx.launch")
+            worker = [launch, "--backend", "ring", "--hostfile", self.args.hostfile, "--",
+                      *worker, *self.pipeline_args()]
+        cmd = worker
         log.info("starting worker: %s", " ".join(cmd))
         self.proc = subprocess.Popen(cmd)
 
@@ -199,7 +230,7 @@ class Agent:
                     "url": self.worker_url,
                     "model": self.model_name,
                     "speed": self.args.speed or node_speed(),
-                    "info": node_info(),
+                    "info": {**node_info(), **({"pipeline": self.group} if self.group else {})},
                 },
             )
             r.raise_for_status()
@@ -360,6 +391,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--speed", type=float, default=None, help="relative decode speed; default: probe")
     parser.add_argument("--heartbeat", type=float, default=5.0)
     parser.add_argument("--allow-sleep", action="store_true", help="do not keep the Mac awake")
+    parser.add_argument("--hostfile", default=None,
+                        help="run a pipeline group over these hosts (mlx.launch hostfile; this Mac first)")
+    parser.add_argument("--plan-mode", choices=("latency", "throughput"), default="latency")
     parser.add_argument("--job-slots", type=int, default=2,
                         help="batch tasks run concurrently on this node (0: no batch work)")
     args, worker_args = parser.parse_known_args(argv)

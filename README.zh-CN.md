@@ -8,7 +8,7 @@
 
 - **多台 Mac，一个 API**：任何 OpenAI SDK 都能直接调用这个集群。请求会分给最空闲的 Mac；同一会话固定在同一台机器上，以复用 prompt cache；某台机器出故障时，请求自动转到其他机器。
 - **批量任务只提交一次结果**：把成千上万条 prompt 写成一个 JSONL 文件提交，各台 Mac 按自己的速度领取任务。即使某台 Mac 在运行中崩溃或休眠，租约、fencing token 和重试机制也能保证每个任务的结果只保存一次。
-- **跑单机装不下的模型**：流水线并行把模型按层切分到多台 Mac 上，通过雷雳线或以太网传递中间结果，输出与单机逐 token 一致。
+- **跑单机装不下的模型**：流水线并行把模型按层切分到多台 Mac 上，通过雷雳线或以太网传递中间结果，输出与单机逐 token 一致。规划器会根据各台 Mac 不同的内存和速度给出切分方案，并在加载模型之前预估速度。整个流水线组通过同一个 API 对外服务。
 - **零配置**：Coordinator 通过 Bonjour（mDNS）广播自己，节点自动找到它并选择最快的链路。各组件以登录服务的方式运行，崩溃后自动重启。
 - **适合日常在用的 Mac**：每次加载模型前都会检查内存和磁盘空间，并把内存用量限制在 macOS 安全线以内。节点只在提供服务期间保持唤醒。
 
@@ -17,7 +17,8 @@
 | 组件 | 功能 |
 |---|---|
 | `swarm coordinator` | OpenAI 兼容网关（`/v1/chat/completions`、`/v1/completions`、`/v1/models`，支持流式输出）、节点注册、路由与故障切换、批量任务队列（`/v1/jobs`，OpenAI Batch 格式） |
-| `swarm agent` | 每台 Mac 上运行一个：启动并守护 MLX Worker，自动发现 Coordinator，上报健康状态，执行批量任务 |
+| `swarm agent` | 每台 Mac 上运行一个：启动并守护 MLX Worker，自动发现 Coordinator，上报健康状态，执行批量任务。加上 `--hostfile` 时，把多台 Mac 组成一个流水线组，作为一个节点对外服务 |
+| `swarm plan` | 试算：一个模型在一组 Mac 上如何切分，每台占多少内存，预计多少 tok/s |
 | `swarm jobs` | 提交、查看、取消批量任务，下载结果 |
 | `swarm service` | 把 Coordinator 或 Agent 安装为 launchd 登录服务 |
 | `swarm nodes` / `chat` / `discover` | 查看集群状态、快速对话、mDNS 查找 Coordinator |
@@ -31,7 +32,7 @@ uv run swarm chat "你好" --model Qwen3-8B-4bit
 uv run swarm jobs submit tasks.jsonl --model Qwen3-8B-4bit --wait -o results.jsonl
 ```
 
-路线图：先把流水线并行接入 API（P2），然后做投机解码和连续批处理（P3）。
+路线图：流水线内多请求交错和流水线组故障切换（P2），然后做投机解码和连续批处理（P3）。
 
 ## 性能实测
 
