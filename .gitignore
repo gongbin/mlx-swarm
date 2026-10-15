@@ -8,3 +8,6 @@ models/
 *.egg-info/
 docs/
 jobs.sqlite3*
+# internal documents (local only)
+doc1.md
+doc2-*.md
