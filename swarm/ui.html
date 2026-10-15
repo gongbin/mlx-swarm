@@ -160,6 +160,7 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20;
 }
 .toast.show { opacity: .92; }
+body:not(.is-admin) .admin-only { display: none !important; }
 .notice { border-left: 3px solid var(--warn); background: var(--panel); padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; }
 
 .brand { color: var(--text); text-decoration: none; }
@@ -260,8 +261,15 @@ html[lang="en"] [data-lang="zh"], html[lang="zh-CN"] [data-lang="en"] { display:
       <div class="chart-wrap"><canvas id="chart"></canvas></div>
       <div class="legend" id="legend"></div>
     </div>
-    <h2 data-i18n="ov.nodesTitle">Nodes</h2>
+    <div class="row" style="justify-content:space-between;margin:26px 0 10px">
+      <h2 style="margin:0" data-i18n="ov.nodesTitle">Nodes</h2>
+      <button class="small primary admin-only" id="add-node-btn" data-i18n="ov.addNode">+ Add a Mac</button>
+    </div>
     <div class="nodes" id="nodes"></div>
+    <div class="admin-only" style="margin-top:26px">
+      <h2 data-i18n="ov.joinTokens">Join tokens</h2>
+      <div class="panel table-scroll"><table id="ntokens"></table></div>
+    </div>
     <h2 data-i18n="ov.recent">Recent requests</h2>
     <div class="panel table-scroll"><table id="recent"></table></div>
   </section>
@@ -366,6 +374,7 @@ html[lang="en"] [data-lang="zh"], html[lang="zh-CN"] [data-lang="en"] { display:
         <button data-doc="model" data-i18n="docs.model">Get a model</button>
         <button data-doc="coord" data-i18n="docs.coord">Start the coordinator</button>
         <button data-doc="node" data-i18n="docs.node">Add a Mac</button>
+        <button data-doc="internet" data-i18n="docs.internet">Join from anywhere</button>
         <button data-doc="pipeline" data-i18n="docs.pipeline">Split a large model</button>
         <button data-doc="spec" data-i18n="docs.spec">Speculative decoding</button>
         <button data-doc="use" data-i18n="docs.use">Use the API</button>
@@ -441,10 +450,22 @@ uv run swarm ui        # opens this dashboard</code></pre>
         </table>
         <p>To serve another model on the same Mac, run <code>service install agent</code> again with the new <code>--model</code>. The new install replaces the old one. To take the Mac out of the cluster, run <code>uv run swarm service uninstall agent</code>.</p>
 
+        <h3 id="doc-en-internet">Join from anywhere</h3>
+        <p>A Mac does not have to be on the coordinator's network. With a <b>join token</b> it connects out to the coordinator and receives requests over that connection. It works from a home or office network behind a router, with no port forwarding. Its worker listens only on <code>127.0.0.1</code>.</p>
+        <ol>
+          <li>Make the coordinator reachable at a public HTTPS address. The simplest way is a reverse proxy with automatic certificates, for example <a href="https://caddyserver.com" target="_blank" rel="noopener">Caddy</a>: <code>caddy reverse-proxy --from swarm.example.com --to localhost:8000</code>. WebSockets must pass through, which Caddy does by default. The coordinator can also serve TLS itself with <code>--ssl-certfile</code> and <code>--ssl-keyfile</code>.</li>
+          <li>On the <a href="#overview">Overview</a> page, click <b>+ Add a Mac</b> and name it. The dashboard shows a command with a new join token.</li>
+          <li>On the new Mac, <a href="#docs" data-jump="install">install mlx-swarm</a>, <a href="#docs" data-jump="model">get the model</a>, and run the command:
+<pre><code>uv run swarm join https://swarm.example.com nt-swarm-… --model models/Qwen3-8B-4bit --job-slots 2</code></pre>
+            It saves the token to <code>~/.config/mlx-swarm/node-token</code> (readable only by you) and installs the agent as a login service. Add <code>--foreground</code> to try it in the terminal first.</li>
+        </ol>
+        <div class="callout">After the first join token is created, every agent needs one, except agents on the coordinator's own Mac. Macs that already joined over the LAN without a token need a token too: run <code>swarm join</code> on them. To disconnect a Mac at once, revoke its token. Its nodes are removed immediately.</div>
+        <p>Each token only acts for the nodes it registered. It cannot take over, heartbeat for, or collect tasks of another Mac's node. Over the internet, only serve whole models on each Mac (replicas). Splitting one model across sites is slow, because every token has to cross the network.</p>
+
         <h3 id="doc-en-pipeline">Split a model too large for one Mac</h3>
         <p>You do not slice files by hand. Every Mac in the group keeps the full model directory at the same path, and each one loads only its own layers. The planner picks how many layers go where, from each Mac's memory budget and bandwidth.</p>
         <h4>1. Describe the group in a hostfile</h4>
-        <p>The first entry is the Mac that starts the group. <code>ips</code> is the address the Macs use to talk to each other; a Thunderbolt link-local address is best.</p>
+        <p>Copy <code>hosts.example.json</code> to <code>hosts.json</code> and edit it. Your hostfiles stay out of git. The first entry is the Mac that starts the group. <code>ips</code> is the address the Macs use to talk to each other; a Thunderbolt link-local address is best.</p>
 <pre><code>[
   {"name": "studio", "ssh": "127.0.0.1",       "ips": ["169.254.10.1"], "mem_budget_gb": 20,  "bandwidth_gbs": 122},
   {"name": "mini",   "ssh": "me@mini.local",   "ips": ["169.254.10.2"], "mem_budget_gb": 8.5, "bandwidth_gbs": 101}
@@ -484,7 +505,9 @@ uv run swarm service install agent --model models/Qwen3-8B-4bit --draft-model mo
         <ul>
           <li>The API is open until you create the first key on the <a href="#api">API</a> page. From then on every <code>/v1</code> request needs <code>Authorization: Bearer sk-swarm-…</code>. Keys are stored hashed and shown once.</li>
           <li>Managing the cluster (nodes, keys) is allowed from the coordinator's own Mac, or with the coordinator's <code>--admin-token</code>, which you enter with the <b>Token</b> button.</li>
-          <li>Agents talk to the coordinator without authentication, so run the cluster on a network you trust. To expose the API to the internet, put it behind a reverse proxy with TLS, and enable API keys.</li>
+          <li>Agents are open on the LAN until you create the first join token (<b>+ Add a Mac</b>). From then on each agent needs its own token, and a token can only act for the nodes it registered.</li>
+          <li>On the internet, always use HTTPS (a reverse proxy, or <code>--ssl-certfile</code>), API keys and join tokens. Use a long, random <code>--admin-token</code>.</li>
+          <li>Whoever runs a node can read the prompts it serves. Send sensitive data only to Macs you trust.</li>
         </ul>
 
         <h3 id="doc-en-trouble">Troubleshooting</h3>
@@ -565,10 +588,22 @@ uv run swarm ui        # 打开本控制台</code></pre>
         </table>
         <p>要在同一台 Mac 上换一个模型，用新的 <code>--model</code> 再运行一次 <code>service install agent</code>，新安装会替换旧的。要让这台 Mac 退出集群，运行 <code>uv run swarm service uninstall agent</code>。</p>
 
+        <h3 id="doc-zh-internet">从任何地方加入</h3>
+        <p>Mac 不必和 Coordinator 在同一个网络。使用<b>加入令牌</b>后，Mac 会主动向外连接 Coordinator，并通过这条连接接收请求。在家里或办公室的路由器后面也能用，不需要端口转发。它的 Worker 只监听 <code>127.0.0.1</code>。</p>
+        <ol>
+          <li>让 Coordinator 能通过公网 HTTPS 地址访问。最简单的方法是使用能自动申请证书的反向代理，例如 <a href="https://caddyserver.com" target="_blank" rel="noopener">Caddy</a>：<code>caddy reverse-proxy --from swarm.example.com --to localhost:8000</code>。反向代理必须放行 WebSocket，Caddy 默认就会放行。Coordinator 也可以用 <code>--ssl-certfile</code> 和 <code>--ssl-keyfile</code> 自己提供 HTTPS。</li>
+          <li>在<a href="#overview">总览</a>页面点击 <b>+ 添加 Mac</b> 并填写名称，控制台会生成一条带新加入令牌的命令。</li>
+          <li>在新 Mac 上<a href="#docs" data-jump="install">安装 mlx-swarm</a>、<a href="#docs" data-jump="model">准备好模型</a>，然后运行这条命令：
+<pre><code>uv run swarm join https://swarm.example.com nt-swarm-… --model models/Qwen3-8B-4bit --job-slots 2</code></pre>
+            令牌会保存到 <code>~/.config/mlx-swarm/node-token</code>（只有你自己可读），Agent 会被安装为登录服务。想先在终端里试运行，可以加上 <code>--foreground</code>。</li>
+        </ol>
+        <div class="callout">创建第一个加入令牌之后，所有 Agent 都需要令牌，Coordinator 本机上的 Agent 除外。之前在局域网内不带令牌加入的 Mac 也需要令牌，请在它们上面运行 <code>swarm join</code>。要立即断开一台 Mac，撤销它的令牌即可，它的节点会立即被移除。</div>
+        <p>每个令牌只能操作自己注册的节点，不能冒充其他 Mac 的节点、替它发心跳或领取它的任务。跨公网时，请让每台 Mac 加载完整模型（副本）。把一个模型切分到不同地点会很慢，因为每个 token 都要穿过网络。</p>
+
         <h3 id="doc-zh-pipeline">切分单机装不下的模型</h3>
         <p>不需要手动切分文件。组内每台 Mac 都在相同路径下保存完整的模型目录，各自只加载自己负责的层。每台 Mac 分多少层，由规划器根据各自的内存预算和带宽决定。</p>
         <h4>1. 用 hostfile 描述这个组</h4>
-        <p>第一项是启动这个组的 Mac。<code>ips</code> 是 Mac 之间互相通信的地址，最好使用雷雳线的链路本地地址。</p>
+        <p>把 <code>hosts.example.json</code> 复制为 <code>hosts.json</code> 再修改，你的 hostfile 不会被提交到 git。第一项是启动这个组的 Mac。<code>ips</code> 是 Mac 之间互相通信的地址，最好使用雷雳线的链路本地地址。</p>
 <pre><code>[
   {"name": "studio", "ssh": "127.0.0.1",       "ips": ["169.254.10.1"], "mem_budget_gb": 20,  "bandwidth_gbs": 122},
   {"name": "mini",   "ssh": "me@mini.local",   "ips": ["169.254.10.2"], "mem_budget_gb": 8.5, "bandwidth_gbs": 101}
@@ -608,7 +643,9 @@ uv run swarm service install agent --model models/Qwen3-8B-4bit --draft-model mo
         <ul>
           <li>在 <a href="#api">API</a> 页面创建第一个 Key 之前，API 是开放的。之后，所有 <code>/v1</code> 请求都需要 <code>Authorization: Bearer sk-swarm-…</code>。Key 以哈希形式保存，只在创建时显示一次。</li>
           <li>管理集群（节点、Key）只能在 Coordinator 所在的 Mac 上进行，或者使用 Coordinator 的 <code>--admin-token</code>（点击<b>令牌</b>按钮输入）。</li>
-          <li>Agent 与 Coordinator 之间的通信目前没有鉴权，请在可信的网络中运行集群。如果要把 API 开放到公网，请放在支持 TLS 的反向代理后面，并启用 API Key。</li>
+          <li>在创建第一个加入令牌（<b>+ 添加 Mac</b>）之前，Agent 接口在局域网内是开放的。之后，每个 Agent 都需要自己的令牌，而且一个令牌只能操作自己注册的节点。</li>
+          <li>在公网上，务必使用 HTTPS（反向代理或 <code>--ssl-certfile</code>）、API Key 和加入令牌，<code>--admin-token</code> 也要用足够长的随机值。</li>
+          <li>节点的运行者能看到经过它的 prompt。敏感数据只发给你信任的 Mac。</li>
         </ul>
 
         <h3 id="doc-zh-trouble">常见问题</h3>
@@ -650,6 +687,28 @@ uv run swarm service install agent --model models/Qwen3-8B-4bit --draft-model mo
     <button id="key-use" data-i18n="api.useHere">Use in this browser</button>
     <button data-copy="#key-secret" data-i18n="copy">Copy</button>
     <button class="primary" id="key-done" data-i18n="done">Done</button>
+  </div>
+</dialog>
+
+<dialog id="node-dlg">
+  <h3 style="margin-top:0" data-i18n="join.title">Add a Mac</h3>
+  <div id="join-step1">
+    <p class="muted" style="font-size:13px" data-i18n="join.body">Create a join token for the new Mac. It lets that Mac serve models for this cluster from anywhere, even behind a home router: the Mac connects out, so no port needs to be opened.</p>
+    <label data-i18n="join.name">Name (e.g. whose Mac, where)</label>
+    <input type="text" id="join-name">
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button id="join-cancel" data-i18n="cancel">Cancel</button>
+      <button class="primary" id="join-create" data-i18n="api.create">Create</button>
+    </div>
+  </div>
+  <div id="join-step2" style="display:none">
+    <p class="muted" style="font-size:13px" data-i18n="join.run">On the new Mac, install mlx-swarm and a model (see Docs), then run this in the project folder. The token is shown only once.</p>
+    <pre class="snippet mono" id="join-cmd" style="white-space:pre-wrap;word-break:break-all"></pre>
+    <p class="muted" style="font-size:12px" id="join-hint"></p>
+    <div class="row" style="justify-content:flex-end;margin-top:14px">
+      <button data-copy="#join-cmd" data-i18n="copy">Copy</button>
+      <button class="primary" id="join-done" data-i18n="done">Done</button>
+    </div>
   </div>
 </dialog>
 
@@ -709,6 +768,13 @@ const STRINGS = {
     "docs.how": "工作原理", "docs.install": "安装", "docs.model": "获取模型", "docs.coord": "启动 Coordinator",
     "docs.node": "添加一台 Mac", "docs.pipeline": "切分大模型", "docs.spec": "投机解码", "docs.use": "调用 API",
     "docs.ops": "日常运维", "docs.security": "安全", "docs.trouble": "常见问题",
+    "ov.addNode": "+ 添加 Mac", "ov.joinTokens": "加入令牌", "ov.noTokens": "还没有加入令牌：局域网内的 Agent 不需要令牌即可加入。创建第一个令牌后，所有 Agent 都需要令牌（Coordinator 本机除外）。",
+    "ov.tokenNodes": "已加入的节点", "ov.revokeNode": "撤销令牌「{name}」？用它加入的节点会立即断开并被移除。",
+    "node.tunnel": "隧道", "node.direct": "直连",
+    "join.title": "添加一台 Mac", "join.body": "为新 Mac 创建一个加入令牌。有了它，这台 Mac 在任何地方都能为本集群提供模型服务，即使在家用路由器后面也可以：由 Mac 主动向外连接，无需开放任何端口。",
+    "join.name": "名称（例如谁的 Mac、在哪里）", "join.run": "在新 Mac 上安装 mlx-swarm 并准备好模型（见文档），然后在项目目录中运行下面的命令。令牌只显示这一次。",
+    "join.addr": "把 COORDINATOR-ADDRESS 换成新 Mac 能访问到的 Coordinator 地址（公网请用 HTTPS 域名）。", "join.note": "如果新 Mac 在公网上，请确认这个地址能从外部访问，并使用 HTTPS。",
+    "cancel": "取消", "docs.internet": "从任何地方加入",
     "copy": "复制", "copied": "已复制", "done": "完成", "never": "从未", "error": "出错",
   },
 };
@@ -745,6 +811,11 @@ const EN = {
   "api.revoke": "Revoke", "api.revokeConfirm": "Revoke key \"{name}\"? Clients using it lose access immediately.",
   "api.none": "No API keys: the API is open to the local network.",
   "copied": "Copied", "never": "never", "error": "Error",
+  "ov.noTokens": "No join tokens: agents on the network can join without one. Once the first token exists, every agent needs one (except on the coordinator's own Mac).",
+  "ov.tokenNodes": "Nodes joined", "ov.revokeNode": "Revoke token \"{name}\"? Nodes that joined with it are disconnected and removed at once.",
+  "node.tunnel": "tunnel", "node.direct": "direct",
+  "join.addr": "Replace COORDINATOR-ADDRESS with an address the new Mac can reach (an HTTPS domain on the internet).",
+  "join.note": "If the new Mac is on the internet, make sure this address is reachable from outside and uses HTTPS.",
 };
 function applyI18n() {
   document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
@@ -818,6 +889,7 @@ async function api(method, path, body, opts = {}) {
 let session = { admin: false, keys_required: false, key: false };
 async function refreshSession() {
   try { session = await api("GET", "/admin/session"); } catch {}
+  document.body.classList.toggle("is-admin", !!session.admin);
   const who = $("#who");
   if (session.admin) { who.className = "badge ok"; who.innerHTML = '<span class="led"></span>' + t("who.admin"); }
   else if (session.key) { who.className = "badge accent"; who.textContent = t("who.key"); }
@@ -886,6 +958,7 @@ async function refreshOverview() {
   $("#s-tokens").textContent = compact(m.totals.completion_tokens);
   renderNodes(nodes, m);
   renderRecent(m.recent);
+  if (session.admin) refreshNodeTokens();
   drawChart(m);
   setModels(data.models);
 }
@@ -916,7 +989,8 @@ function renderNodes(nodes, m) {
         </div>
         <span class="badge ${cls}"><span class="led"></span>${esc(label)}</span>
       </div>
-      <div class="row" style="margin-top:8px;gap:6px"><span class="badge">${esc(n.model)}</span>${spec}</div>
+      <div class="row" style="margin-top:8px;gap:6px"><span class="badge">${esc(n.model)}</span>${spec}
+        <span class="badge" title="${esc(n.remote || "")}">${esc(t(n.tunnel ? "node.tunnel" : "node.direct"))}${n.remote ? " · " + esc(n.remote) : ""}</span></div>
       <dl class="kv">
         <dt>${esc(t("node.mode"))}</dt><dd>${mode}</dd>
         <dt>${esc(t("node.memFree"))}</dt><dd>${mem == null ? "–" : fmt(mem) + "%"}<div class="bar"><span style="width:${mem ?? 0}%;background:${memColor}"></span></div></dd>
@@ -989,6 +1063,33 @@ function drawChart(m) {
   }
   $("#legend").innerHTML = ids.map(id => `<span><i style="background:${colorOf(id)}"></i>${esc(id)}</span>`).join("") ||
     `<span>${esc(t("ov.noRecent"))}</span>`;
+}
+
+async function refreshNodeTokens() {
+  let data;
+  try { data = await api("GET", "/admin/node-tokens"); } catch { return; }
+  const tb = $("#ntokens");
+  if (!data.data.length) { tb.innerHTML = `<tr><td class="empty">${esc(t("ov.noTokens"))}</td></tr>`; return; }
+  tb.innerHTML = `<tr><th>${t("api.name")}</th><th>${t("api.hint")}</th><th>${t("api.created_at")}</th>
+    <th>${t("api.lastUsed")}</th><th>${t("ov.tokenNodes")}</th><th>${t("api.state")}</th><th></th></tr>` +
+    data.data.map(k => `<tr><td>${esc(k.name)}</td><td class="mono">${esc(k.hint)}</td><td>${datetime(k.created_at)}</td>
+      <td>${datetime(k.last_used_at)}</td><td>${esc(k.nodes.join(", ") || "–")}</td>
+      <td><span class="badge ${k.active ? "ok" : ""}">${esc(t(k.active ? "api.active" : "api.revoked"))}</span></td>
+      <td>${k.active ? `<button class="small danger" data-ntrevoke="${esc(k.id)}" data-name="${esc(k.name)}">${esc(t("api.revoke"))}</button>` : ""}</td></tr>`).join("");
+}
+function coordinatorUrl() {
+  const loopback = ["127.0.0.1", "localhost", "::1", "[::1]"].includes(location.hostname);
+  return loopback ? "http://COORDINATOR-ADDRESS:" + (location.port || "80") : location.origin;
+}
+async function createNodeToken() {
+  try {
+    const k = await api("POST", "/admin/node-tokens", { name: $("#join-name").value });
+    const model = models[0] || "Qwen3-8B-4bit";
+    $("#join-cmd").textContent = `uv run swarm join ${coordinatorUrl()} ${k.token} \\\n    --model models/${model} --job-slots 2`;
+    $("#join-hint").textContent = coordinatorUrl().includes("COORDINATOR-ADDRESS") ? t("join.addr") : t("join.note");
+    $("#join-step1").style.display = "none"; $("#join-step2").style.display = "";
+    refreshNodeTokens(); refreshSession();
+  } catch (e) { toast(e.message); }
 }
 
 // ---------------------------------------------------------------- models
@@ -1289,6 +1390,10 @@ document.addEventListener("click", async ev => {
     if (!confirm(t("jobs.cancelConfirm", { id: d.cancel }))) return;
     try { await api("POST", `/v1/jobs/${encodeURIComponent(d.cancel)}/cancel`); refreshJobs(); }
     catch (e) { toast(e.message); }
+  } else if (d.ntrevoke) {
+    if (!confirm(t("ov.revokeNode", { name: d.name }))) return;
+    try { await api("DELETE", `/admin/node-tokens/${encodeURIComponent(d.ntrevoke)}`); refreshOverview(); }
+    catch (e) { toast(e.message); }
   } else if (d.revoke) {
     if (!confirm(t("api.revokeConfirm", { name: d.name }))) return;
     try { await api("DELETE", `/admin/keys/${encodeURIComponent(d.revoke)}`); refreshKeys(); refreshSession().then(updateExamples); }
@@ -1315,6 +1420,13 @@ $("#j-file").addEventListener("change", async e => {
   const f = e.target.files[0]; if (f) $("#j-input").value = await f.text();
 });
 $("#k-create").onclick = createKey;
+$("#add-node-btn").onclick = () => {
+  $("#join-name").value = ""; $("#join-step1").style.display = ""; $("#join-step2").style.display = "none";
+  $("#node-dlg").showModal();
+};
+$("#join-create").onclick = createNodeToken;
+$("#join-cancel").onclick = () => $("#node-dlg").close();
+$("#join-done").onclick = () => $("#node-dlg").close();
 $("#k-name").addEventListener("keydown", e => { if (e.key === "Enter") createKey(); });
 $("#token-btn").onclick = () => { $("#token-input").value = token || ""; $("#token-dlg").showModal(); };
 $("#token-save").onclick = async () => {

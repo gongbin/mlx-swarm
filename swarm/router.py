@@ -35,10 +35,14 @@ class Node:
     draining: bool = False  # set from the dashboard: no new requests or batch tasks
     stats: dict = field(default_factory=dict)  # from heartbeats: disk, load, ...
     registered_at: float = 0.0
+    token_id: str | None = None  # credential that registered it ("admin", a node token id, or None: open)
+    connected: bool = True  # tunnelled workers: whether the agent's tunnel is up
+    remote: str | None = None  # address the agent connects from
 
     def healthy(self, now: float) -> bool:
         return (
-            now - self.last_seen < HEARTBEAT_TIMEOUT_S
+            self.connected
+            and now - self.last_seen < HEARTBEAT_TIMEOUT_S
             and now >= self.cooldown_until
             and (self.memory_free_pct is None or self.memory_free_pct >= MIN_FREE_MEMORY_PCT)
         )
@@ -59,6 +63,10 @@ class Node:
             "served": self.served,
             "failures": self.failures,
             "draining": self.draining,
+            "tunnel": self.url.startswith("tunnel://"),
+            "connected": self.connected,
+            "remote": self.remote,
+            "token_id": self.token_id,
             "up_s": round(now - self.registered_at, 1),
             "stats": self.stats,
             "info": self.info,

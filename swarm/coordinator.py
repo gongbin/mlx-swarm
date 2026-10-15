@@ -18,7 +18,14 @@ playground, batch jobs and API keys. Access control:
   from then on it needs ``Authorization: Bearer <key>``, or an administrator;
 - ``/admin/*`` (dashboard management) needs an administrator: a request from
   this Mac itself, or one carrying the ``--admin-token``;
-- ``/internal/*`` (agents) and ``/health``, ``/nodes`` stay open on the LAN.
+- ``/internal/*`` (agents) is open until the first node token is created; then
+  each agent needs one (``swarm join``), and may only act for the nodes it
+  registered itself;
+- ``/health`` and ``/nodes`` stay open.
+
+Agents behind NAT dial out and receive requests over a WebSocket tunnel (see
+``swarm.tunnel``). For the internet, serve TLS (``--ssl-certfile``/``--ssl-keyfile``,
+or a reverse proxy in front).
 
     swarm coordinator --host 0.0.0.0 --port 8000 --db jobs.sqlite3 [--admin-token T]
 """
@@ -36,13 +43,15 @@ from contextlib import asynccontextmanager
 from importlib import resources
 
 import httpx
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Request, WebSocket
+from starlette.requests import HTTPConnection
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from swarm.jobs import JobError, JobStore
-from swarm.keys import KeyStore
+from swarm.keys import NODE_TOKENS, KeyStore
 from swarm.metrics import Metrics
 from swarm.router import NoNodeAvailable, Registry
+from swarm.tunnel import SCHEME as TUNNEL, Tunnel, TunnelError
 
 log = logging.getLogger("swarm.coordinator")
 
@@ -58,7 +67,7 @@ def error(status: int, message: str, kind: str = "invalid_request_error") -> JSO
 LOOPBACK = {"127.0.0.1", "::1", "localhost"}
 
 
-def bearer(request: Request) -> str | None:
+def bearer(request: HTTPConnection) -> str | None:
     auth = request.headers.get("authorization", "")
     return auth[7:].strip() if auth[:7].lower() == "bearer " else None
 
@@ -68,28 +77,52 @@ def usage_of(payload: dict) -> tuple[int, int]:
     return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
 
 
-class AccessControl:
-    """ASGI middleware: API keys on /v1/*, administrators on /admin/*.
+class Guard:
+    """Who is calling: administrator, API key, node token."""
 
-    Sets ``scope["state"]["key"]`` to the caller's key id ("admin" for an
-    administrator, None on an open API) for usage accounting.
-    """
-
-    def __init__(self, app, keys: KeyStore, admin_token: str | None, trust_local: bool):
-        self.app = app
+    def __init__(self, keys: KeyStore, node_tokens: KeyStore, admin_token: str | None, trust_local: bool):
         self.keys = keys
+        self.node_tokens = node_tokens
         self.admin_token = admin_token
         self.trust_local = trust_local
 
-    def is_admin(self, request: Request) -> bool:
-        token = bearer(request)
+    def is_admin(self, conn: HTTPConnection) -> bool:
+        token = bearer(conn)
         if self.admin_token and token and hmac.compare_digest(token, self.admin_token):
             return True
-        if not self.trust_local or request.client is None:
+        if not self.trust_local or conn.client is None:
             return False
-        client = request.client.host
-        server = (request.scope.get("server") or ("",))[0]
-        return client in LOOPBACK or client == server  # a browser on this Mac
+        client = conn.client.host
+        server = (conn.scope.get("server") or ("",))[0]
+        return client in LOOPBACK or client == server  # e.g. a browser or agent on this Mac
+
+    def node_credential(self, conn: HTTPConnection) -> tuple[bool, str | None]:
+        """(allowed, credential) for /internal/*: a node token id, "admin", or None while open."""
+        token = self.node_tokens.verify(bearer(conn))
+        if token:
+            return True, token
+        if self.is_admin(conn):
+            return True, "admin"
+        return not self.node_tokens.required, None
+
+
+def owns(credential: str | None, node) -> bool:
+    """An agent may only act for nodes registered with its own credential."""
+    return credential == "admin" or credential == node.token_id
+
+
+class AccessControl:
+    """ASGI middleware: API keys on /v1/*, node tokens on /internal/*, administrators on /admin/*.
+
+    Sets ``scope["state"]``: ``admin``; ``key``, the caller's API key id ("admin"
+    for an administrator, None on an open API) for usage accounting; and
+    ``node``, the caller's node credential. WebSockets check for themselves.
+    """
+
+    def __init__(self, app, guard: Guard):
+        self.app = app
+        self.guard = guard
+        self.keys = guard.keys
 
     async def __call__(self, scope, receive, send):
         if scope["type"] != "http":
@@ -97,7 +130,7 @@ class AccessControl:
         request = Request(scope)
         path = scope["path"]
         state = scope.setdefault("state", {})
-        state["admin"] = self.is_admin(request)
+        state["admin"] = self.guard.is_admin(request)
         denied = None
         if path.startswith("/admin/") and path != "/admin/session" and not state["admin"]:
             denied = error(403, "administrator only: use this Mac or the coordinator's --admin-token",
@@ -111,6 +144,10 @@ class AccessControl:
             elif self.keys.required:
                 denied = error(401, "missing or invalid API key (Authorization: Bearer sk-swarm-...)",
                                "authentication_error")
+        elif path.startswith("/internal/"):
+            allowed, state["node"] = self.guard.node_credential(request)
+            if not allowed:
+                denied = error(401, "missing or invalid node token (see `swarm join`)", "authentication_error")
         if denied is not None:
             return await denied(scope, receive, send)
         await self.app(scope, receive, send)
@@ -118,12 +155,16 @@ class AccessControl:
 
 def create_app(registry: Registry | None = None, client: httpx.AsyncClient | None = None,
                store: JobStore | None = None, keys: KeyStore | None = None,
+               node_tokens: KeyStore | None = None,
                admin_token: str | None = None, trust_local: bool = True) -> FastAPI:
     reg = registry or Registry()
     http = client or httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
     jobs = store or JobStore()
     keys = keys or KeyStore()
+    node_tokens = node_tokens or KeyStore(**NODE_TOKENS)
+    guard = Guard(keys, node_tokens, admin_token, trust_local)
     metrics = Metrics()
+    tunnels: dict[str, Tunnel] = {}
 
     @asynccontextmanager
     async def lifespan(app):
@@ -135,7 +176,9 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
     app.state.jobs = jobs
     app.state.keys = keys
     app.state.metrics = metrics
-    app.add_middleware(AccessControl, keys=keys, admin_token=admin_token, trust_local=trust_local)
+    app.state.node_tokens = node_tokens
+    app.state.tunnels = tunnels
+    app.add_middleware(AccessControl, guard=guard)
 
     def account(request: Request, node, model, kind, payload: dict | None, seconds, ttft=None, ok=True):
         p, c = usage_of(payload or {})
@@ -144,25 +187,84 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         if key and key != "admin":
             keys.record(key, p, c)
 
+    def not_yours(node_id: str):
+        return error(403, f"node {node_id} was registered with another credential", "permission_error")
+
     @app.post("/internal/nodes/register")
-    async def register(body: dict):
-        node = reg.register(
-            body["node_id"], body["url"], body["model"], float(body.get("speed", 1.0)), body.get("info")
-        )
+    async def register(request: Request, body: dict):
+        credential = request.state.node
+        node_id = body["node_id"]
+        existing = reg.nodes.get(node_id)
+        if existing is not None and not owns(credential, existing):
+            return not_yours(node_id)
+        url = body["url"]
+        if url.startswith(TUNNEL):
+            url = TUNNEL + node_id
+        node = reg.register(node_id, url, body["model"], float(body.get("speed", 1.0)), body.get("info"))
+        node.token_id = credential
+        node.remote = request.client.host if request.client else None
+        node.connected = not url.startswith(TUNNEL) or node_id in tunnels
+        if credential and credential != "admin":
+            node_tokens.record(credential)
         log.info("registered %s at %s serving %s", node.node_id, node.url, node.model)
         return {"ok": True}
 
     @app.post("/internal/nodes/{node_id}/heartbeat")
-    async def heartbeat(node_id: str, body: dict):
-        if not reg.heartbeat(node_id, body.get("memory_free_pct"), body.get("stats")):
+    async def heartbeat(request: Request, node_id: str, body: dict):
+        node = reg.nodes.get(node_id)
+        if node is None:
             return error(404, f"unknown node {node_id}; register first")
+        if not owns(request.state.node, node):
+            return not_yours(node_id)
+        reg.heartbeat(node_id, body.get("memory_free_pct"), body.get("stats"))
         return {"ok": True}
 
     @app.post("/internal/nodes/{node_id}/deregister")
-    async def deregister(node_id: str):
+    async def deregister(request: Request, node_id: str):
+        node = reg.nodes.get(node_id)
+        if node is not None and not owns(request.state.node, node):
+            return not_yours(node_id)
         reg.deregister(node_id)
         log.info("deregistered %s", node_id)
         return {"ok": True}
+
+    @app.websocket("/internal/tunnel/{node_id}")
+    async def tunnel(ws: WebSocket, node_id: str):
+        allowed, credential = guard.node_credential(ws)
+        node = reg.nodes.get(node_id)
+        if not allowed:
+            return await ws.close(code=4401, reason="missing or invalid node token")
+        if node is None:
+            return await ws.close(code=4404, reason="register first")
+        if not owns(credential, node):
+            return await ws.close(code=4403, reason="registered with another credential")
+        await ws.accept()
+        t = Tunnel(ws, node_id, ws.client.host if ws.client else None)
+        old = tunnels.pop(node_id, None)
+        if old is not None:
+            await old.close()
+        tunnels[node_id] = t
+        node.connected = True
+        node.remote = t.remote
+        log.info("tunnel up for %s from %s", node_id, t.remote)
+        try:
+            await t.run()
+        finally:
+            if tunnels.get(node_id) is t:
+                del tunnels[node_id]
+                current = reg.nodes.get(node_id)
+                if current is not None and current.url.startswith(TUNNEL):
+                    current.connected = False
+            log.info("tunnel down for %s", node_id)
+
+    async def open_upstream(node, path: str, body: dict):
+        """A streaming response from the node's worker: over HTTP, or through its tunnel."""
+        if node.url.startswith(TUNNEL):
+            t = tunnels.get(node.node_id)
+            if t is None:
+                raise TunnelError(f"no tunnel from {node.node_id}")
+            return await t.request("POST", path, body)
+        return await http.send(http.build_request("POST", node.url + path, json=body), stream=True)
 
     @app.get("/health")
     async def health():
@@ -217,9 +319,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
             node.inflight += 1
             started = time.perf_counter()
             try:
-                resp = await http.send(
-                    http.build_request("POST", node.url + path, json=upstream), stream=True
-                )
+                resp = await open_upstream(node, path, upstream)
             except httpx.TransportError as e:
                 node.inflight -= 1
                 reg.failed(node)
@@ -261,6 +361,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
 
             async def relay(resp=resp, node=node, started=started):
                 usage, ttft, ok, skip_blank = None, None, False, False
+                client_gone = False  # the client hung up: not the worker's fault
                 try:
                     # Line by line, so the model-name rewrite never straddles chunks.
                     async for line in resp.aiter_lines():
@@ -286,11 +387,15 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
                 except httpx.TransportError as e:
                     reg.failed(node)
                     log.warning("stream from %s broke: %r", node.node_id, e)
+                except BaseException:  # cancelled when the client disconnects
+                    client_gone = True
+                    raise
                 finally:
                     await resp.aclose()
                     node.inflight -= 1
                     elapsed = time.perf_counter() - started
-                    account(request, node, model, kind, usage, elapsed, ttft, ok and resp.status_code < 400)
+                    account(request, node, model, kind, usage, elapsed, ttft,
+                            (ok or client_gone) and resp.status_code < 400)
                     log.info("%s -> %s %.2fs (stream)", path, node.node_id, elapsed)
 
             return StreamingResponse(
@@ -349,20 +454,30 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
 
     # -- batch jobs: agents -------------------------------------------------
     @app.post("/internal/tasks/lease")
-    async def lease_tasks(body: dict):
+    async def lease_tasks(request: Request, body: dict):
         node = reg.nodes.get(body["node_id"])
         if node is None:
             return error(404, f"unknown node {body['node_id']}; register first")
+        if not owns(request.state.node, node):
+            return not_yours(node.node_id)
         if node.draining or not node.healthy(reg.clock()):
             return {"tasks": []}
         return {"tasks": jobs.lease(node.node_id, node.model, int(body.get("max", 1)))}
 
     @app.post("/internal/tasks/renew")
-    async def renew_tasks(body: dict):
+    async def renew_tasks(request: Request, body: dict):
+        node = reg.nodes.get(body["node_id"])
+        if node is not None and not owns(request.state.node, node):
+            return not_yours(node.node_id)
         return {"lost": jobs.renew(body["node_id"], body.get("leases") or [])}
 
     @app.post("/internal/tasks/{task_id}/complete")
-    async def complete_task(task_id: int, body: dict):
+    async def complete_task(request: Request, task_id: int, body: dict):
+        # Ownership is checked while the node is registered; otherwise (e.g. right
+        # after a coordinator restart) the fencing token and owner still must match.
+        node = reg.nodes.get(body["node_id"])
+        if node is not None and not owns(request.state.node, node):
+            return not_yours(node.node_id)
         result = body["result"]
         if isinstance(result, dict) and result.get("model") == WORKER_MODEL:
             result["model"] = body.get("model") or result["model"]
@@ -375,7 +490,10 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         return {"ok": True}
 
     @app.post("/internal/tasks/{task_id}/fail")
-    async def fail_task(task_id: int, body: dict):
+    async def fail_task(request: Request, task_id: int, body: dict):
+        node = reg.nodes.get(body["node_id"])
+        if node is not None and not owns(request.state.node, node):
+            return not_yours(node.node_id)
         if not jobs.fail(task_id, body["token"], body["node_id"], body.get("error", ""),
                          bool(body.get("retryable", True))):
             return error(409, "stale fencing token", "conflict")
@@ -396,14 +514,15 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
     async def session(request: Request):
         """What the caller may do: lets the dashboard ask for a token when needed."""
         return {"admin": request.state.admin, "keys_required": keys.required,
-                "key": keys.verify(bearer(request)) is not None}
+                "key": keys.verify(bearer(request)) is not None,
+                "node_tokens_required": node_tokens.required}
 
     @app.get("/admin/overview")
     async def overview():
         now = reg.clock()
         return {
             "coordinator": {"host": socket.gethostname(), "pid": os.getpid(),
-                            "keys_required": keys.required},
+                            "keys_required": keys.required, "node_tokens_required": node_tokens.required},
             "nodes": [n.to_dict(now) for n in reg.nodes.values()],
             "models": reg.models(),
             "backlog": jobs.model_backlog(),
@@ -425,6 +544,9 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         if node_id not in reg.nodes:
             return error(404, f"no node {node_id}")
         reg.deregister(node_id)
+        t = tunnels.pop(node_id, None)
+        if t is not None:
+            await t.close()
         log.info("removed node %s", node_id)
         return {"ok": True}
 
@@ -445,6 +567,33 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         log.info("revoked API key %s", key_id)
         return {"ok": True, "required": keys.required}
 
+    @app.get("/admin/node-tokens")
+    async def list_node_tokens():
+        now = reg.clock()
+        data = node_tokens.list()
+        for t in data:
+            t["nodes"] = [n.node_id for n in reg.nodes.values() if n.token_id == t["id"] and n.healthy(now)]
+        return {"data": data, "required": node_tokens.required}
+
+    @app.post("/admin/node-tokens")
+    async def create_node_token(body: dict):
+        record, secret = node_tokens.create(str(body.get("name") or ""))
+        log.info("created node token %s (%s)", record["id"], record["name"])
+        return JSONResponse({**record, "token": secret}, status_code=201)
+
+    @app.delete("/admin/node-tokens/{token_id}")
+    async def revoke_node_token(token_id: str):
+        if not node_tokens.revoke(token_id):
+            return error(404, f"no active node token {token_id}")
+        gone = [n.node_id for n in reg.nodes.values() if n.token_id == token_id]
+        for node_id in gone:  # disconnect the nodes that joined with it
+            reg.deregister(node_id)
+            t = tunnels.pop(node_id, None)
+            if t is not None:
+                await t.close()
+        log.info("revoked node token %s; removed %s", token_id, gone or "no nodes")
+        return {"ok": True, "removed": gone, "required": node_tokens.required}
+
     return app
 
 
@@ -462,10 +611,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--admin-token", default=os.environ.get("SWARM_ADMIN_TOKEN"),
                         help="lets other machines manage the cluster from the dashboard "
                              "(default: $SWARM_ADMIN_TOKEN; without it, only this Mac can)")
+    parser.add_argument("--ssl-certfile", default=None, help="serve HTTPS with this certificate (PEM)")
+    parser.add_argument("--ssl-keyfile", default=None, help="private key for --ssl-certfile")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(message)s")
-    app = create_app(store=JobStore(args.db), keys=KeyStore(args.db), admin_token=args.admin_token)
+    app = create_app(store=JobStore(args.db), keys=KeyStore(args.db), node_tokens=KeyStore(args.db, **NODE_TOKENS),
+                     admin_token=args.admin_token)
     advertiser = None
     if not args.no_mdns:
         from swarm.discovery import Advertiser
@@ -475,7 +627,8 @@ def main(argv: list[str] | None = None) -> None:
         except OSError as e:  # e.g. macOS local-network permission
             log.warning("mDNS advertising failed (%r); clients need --coordinator", e)
     try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level)
+        uvicorn.run(app, host=args.host, port=args.port, log_level=args.log_level,
+                    ssl_certfile=args.ssl_certfile, ssl_keyfile=args.ssl_keyfile)
     finally:
         if advertiser:
             advertiser.close()

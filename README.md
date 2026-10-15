@@ -12,6 +12,7 @@ OpenAI-compatible API.
 - **Batch jobs that finish exactly once**: submit thousands of prompts as a JSONL file. Every Mac pulls work at its own pace. Leases, fencing tokens and retries make sure each task's result is saved exactly once, even when a Mac crashes or sleeps mid-task.
 - **Models bigger than one Mac**: pipeline parallelism splits a model by layers across Macs over Thunderbolt or Ethernet, with output identical to a single Mac. A planner picks the split for Macs of different sizes and speeds and predicts the speed before anything is loaded. The group is served through the same API.
 - **Fast single streams, full throughput under load**: with a small draft model a worker uses speculative decoding while a request runs alone (about 2x faster), and switches to batching the moment other requests arrive. A running request is handed over to the batch mid-stream without a pause.
+- **Join from anywhere**: a Mac behind a home or office router joins with one command and a join token. It connects out to the coordinator over a WebSocket tunnel, so no port forwarding is needed. Each token can act only for its own nodes, and revoking it disconnects them at once.
 - **Web dashboard**: open the coordinator's address in a browser to see every Mac's health, memory and live tok/s, chat with any served model, submit and download batch jobs, and create or revoke API keys with per-key usage.
 - **Zero configuration**: the coordinator announces itself over Bonjour (mDNS). Nodes find it on their own, pick the fastest link, and run as login services that restart after a crash.
 - **Safe on shared Macs**: memory and disk checks run before every model load, and memory use is capped below what macOS needs. Nodes stay awake only while they are serving.
@@ -23,6 +24,7 @@ OpenAI-compatible API.
 | `swarm coordinator` | OpenAI-compatible gateway (`/v1/chat/completions`, `/v1/completions`, `/v1/models`, streaming), node registry, routing and failover, batch job queue (`/v1/jobs`, OpenAI Batch format), optional API keys |
 | Dashboard (`http://<coordinator>:8000/`, or `swarm ui`) | Node status and throughput, drain or remove nodes, chat playground, batch jobs, API keys and examples, and a built-in guide to setting up and running the cluster. Managing the cluster needs the coordinator's Mac or its `--admin-token` |
 | `swarm agent` | Runs on every Mac: starts and supervises an MLX worker, finds the coordinator, reports health, runs batch tasks. With `--hostfile` it runs a pipeline group across several Macs as one node |
+| `swarm join` | Join a remote coordinator from any network (outbound tunnel, node token), installed as a login service |
 | `swarm plan` | Dry run: how a model splits over a group of Macs, memory per Mac, and expected tok/s |
 | `swarm jobs` | Submit, track, cancel and download batch jobs |
 | `swarm service` | Installs the coordinator or an agent as a launchd login service |

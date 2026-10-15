@@ -24,6 +24,14 @@ with ``"ssh": "127.0.0.1"`` -- as one node serving the model:
 
     swarm agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json   # see hosts.example.json
 
+Across the internet (or any NAT), ``--tunnel`` makes the agent dial out to the
+coordinator over a WebSocket and receive requests through it; the worker then
+listens on 127.0.0.1 only (see ``swarm.tunnel``). A coordinator with node
+tokens needs one: ``--token``, ``$SWARM_NODE_TOKEN`` or the file written by
+``swarm join`` (``~/.config/mlx-swarm/node-token``):
+
+    swarm join https://swarm.example.com nt-swarm-... --model models/Qwen3-8B-4bit
+
 Arguments the agent does not know are passed to the worker:
 
     swarm agent --model models/Qwen3-8B-4bit --mem-budget-gb 7 --decode-concurrency 4
@@ -49,6 +57,19 @@ from urllib.parse import urlparse
 import httpx
 
 from swarm.discovery import NotFound, resolve
+from swarm.tunnel import SCHEME as TUNNEL, TunnelClient
+
+TOKEN_FILE = Path.home() / ".config" / "mlx-swarm" / "node-token"
+
+
+def node_token(value: str | None) -> str | None:
+    """--token, $SWARM_NODE_TOKEN, or the token `swarm join` saved."""
+    if value or os.environ.get("SWARM_NODE_TOKEN"):
+        return value or os.environ["SWARM_NODE_TOKEN"]
+    try:
+        return TOKEN_FILE.read_text().strip() or None
+    except OSError:
+        return None
 
 log = logging.getLogger("swarm.agent")
 
@@ -123,7 +144,10 @@ class Agent:
         self.local_url = f"http://127.0.0.1:{args.port}"
         self.model_name = args.served_name or Path(args.model.rstrip("/")).name
         self.node_id = args.node_id or socket.gethostname().split(".")[0]
-        self.http = httpx.Client(timeout=10.0)
+        token = node_token(args.token)
+        self.headers = {"authorization": f"Bearer {token}"} if token else {}
+        self.http = httpx.Client(timeout=10.0, headers=self.headers)
+        self.tunnel: TunnelClient | None = None
         self.proc: subprocess.Popen | None = None
         self.restarts: list[float] = []
         self.registered = False
@@ -147,7 +171,11 @@ class Agent:
     def set_coordinator(self, url: str) -> None:
         self.coordinator = url
         self.host = self.args.advertise_host or advertise_ip(url)
-        self.worker_url = f"http://{self.host}:{self.args.port}"
+        # A tunnelled worker has no reachable URL; the coordinator names it tunnel://<node_id>.
+        self.worker_url = TUNNEL if self.args.tunnel else f"http://{self.host}:{self.args.port}"
+        if getattr(self, "tunnel", None) is not None:  # rediscovered: reconnect to the new coordinator
+            self.tunnel.coordinator = url
+            self.tunnel.stop_socket()
         log.info("coordinator %s; worker advertised as %s", url, self.worker_url)
 
     def rediscover(self) -> None:
@@ -189,7 +217,7 @@ class Agent:
         worker = [
             sys.executable, "-m", "swarm.worker",
             "--model", self.args.model,
-            "--host", "0.0.0.0",
+            "--host", "127.0.0.1" if self.args.tunnel else "0.0.0.0",
             "--port", str(self.args.port),
             *self.worker_args,
         ]
@@ -248,6 +276,8 @@ class Agent:
                              "job_slots": self.args.job_slots},
                 },
             )
+            if r.status_code in (401, 403):
+                log.error("coordinator refused registration: %s", r.json().get("error", {}).get("message"))
             r.raise_for_status()
             log.info("registered %s (%s at %s)", self.node_id, self.model_name, self.worker_url)
             self.registered = True
@@ -301,7 +331,7 @@ class Agent:
     # -- batch tasks ----------------------------------------------------
     def job_loop(self) -> None:
         """Lease tasks while slots are free; each runs in its own thread."""
-        http = httpx.Client(timeout=10.0)
+        http = httpx.Client(timeout=10.0, headers=self.headers)
         next_renew = 0.0
         while not self.stopping:
             if not (self.ready.is_set() and self.registered):
@@ -356,7 +386,7 @@ class Agent:
             for _ in range(3):  # the coordinator may be restarting
                 try:
                     resp = httpx.post(f"{self.coordinator}/internal/tasks/{task_id}/{path}",
-                                      json=report, timeout=10)
+                                      json=report, timeout=10, headers=self.headers)
                     if resp.status_code == 409:
                         log.warning("task %s: %s", task_id, resp.json()["error"]["message"])
                     break
@@ -385,6 +415,9 @@ class Agent:
                               self.proc.poll())
                     return 1
                 self.ready.set()
+                if self.args.tunnel and self.tunnel is None:
+                    self.tunnel = TunnelClient(self.coordinator, self.node_id, self.local_url, self.headers)
+                    self.tunnel.start()
                 while not self.stopping and self.proc.poll() is None:
                     self.heartbeat()
                     time.sleep(self.args.heartbeat)
@@ -402,6 +435,8 @@ class Agent:
         except KeyboardInterrupt:
             return 0
         finally:
+            if self.tunnel is not None:
+                self.tunnel.stop()
             self.deregister()
             self.stop_worker()
 
@@ -421,6 +456,11 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--hostfile", default=None,
                         help="run a pipeline group over these hosts (mlx.launch hostfile; this Mac first)")
     parser.add_argument("--plan-mode", choices=("latency", "throughput"), default="latency")
+    parser.add_argument("--tunnel", action="store_true",
+                        help="dial out to the coordinator and take requests over that connection "
+                             "(for Macs behind NAT / on the internet); the worker listens on 127.0.0.1")
+    parser.add_argument("--token", default=None,
+                        help="node token from the coordinator; default: $SWARM_NODE_TOKEN or the saved one")
     parser.add_argument("--job-slots", type=int, default=2,
                         help="batch tasks run concurrently on this node (0: no batch work)")
     args, worker_args = parser.parse_known_args(argv)

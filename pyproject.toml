@@ -14,6 +14,7 @@ dependencies = [
     "httpx>=0.28",
     "uvicorn>=0.32",
     "zeroconf>=0.136",
+    "websockets>=13",
 ]
 
 [project.scripts]

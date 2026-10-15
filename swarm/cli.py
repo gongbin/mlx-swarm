@@ -9,6 +9,7 @@
     swarm jobs list | status ID | results ID [-o F] | cancel ID
     swarm discover                                     find coordinators via mDNS
     swarm ui                                           open the web dashboard
+    swarm join URL TOKEN --model PATH ...              join a remote coordinator (outbound tunnel)
     swarm plan --model DIR --hostfile H                how a model splits over a pipeline group
     swarm service install|uninstall|status ROLE ...    run as a launchd login agent
 
@@ -216,6 +217,37 @@ def ui(argv: list[str]) -> None:
     webbrowser.open(url)
 
 
+def join(argv: list[str]) -> None:
+    """Save a node token and install the agent as a service that tunnels to the coordinator."""
+    import os
+
+    parser = argparse.ArgumentParser(
+        prog="swarm join",
+        description="join a coordinator from anywhere: the agent dials out, so no port needs to be open here",
+        epilog="other arguments (e.g. --model, --job-slots, --draft-model) go to `swarm agent`",
+    )
+    parser.add_argument("coordinator", help="e.g. https://swarm.example.com or http://10.0.0.5:8000")
+    parser.add_argument("token", help="node token from the dashboard (nt-swarm-...)")
+    parser.add_argument("--foreground", action="store_true", help="run the agent here instead of as a service")
+    args, agent_args = parser.parse_known_args(argv)
+    if "--model" not in agent_args:
+        sys.exit("swarm join needs --model, e.g. --model models/Qwen3-8B-4bit")
+    from swarm.agent import TOKEN_FILE
+
+    TOKEN_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(TOKEN_FILE, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as f:
+        f.write(args.token.strip() + "\n")
+    print(f"node token saved to {TOKEN_FILE} (readable only by you)")
+    agent_args = ["--coordinator", args.coordinator.rstrip("/"), "--tunnel", *agent_args]
+    if args.foreground:
+        __import__("swarm.agent").agent.main(agent_args)
+    else:
+        from swarm import service
+
+        service.install("agent", agent_args)
+
+
 def main() -> None:
     commands = {
         "coordinator": lambda argv: __import__("swarm.coordinator").coordinator.main(argv),
@@ -226,6 +258,7 @@ def main() -> None:
         "jobs": jobs,
         "discover": discover,
         "ui": ui,
+        "join": join,
         "plan": lambda argv: __import__("swarm.planner").planner.main(argv),
         "service": lambda argv: __import__("swarm.service").service.main(argv),
     }

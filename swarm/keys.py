@@ -1,9 +1,13 @@
-"""API keys for the coordinator's OpenAI endpoints, with per-key usage.
+"""Bearer credentials with usage counters: API keys and node join tokens.
 
-While no key exists the API is open, as before. Once a key has been created,
-every ``/v1/*`` request needs ``Authorization: Bearer <key>`` (or must come
-from an administrator, see ``swarm.coordinator``). Only a SHA-256 of each key
-is stored; the key itself is shown once, when it is created.
+- API keys (``KeyStore(path)``) guard the OpenAI endpoints. While none exists
+  the API is open, as before; once one has been created, every ``/v1/*``
+  request needs ``Authorization: Bearer sk-swarm-...``.
+- Node tokens (``KeyStore(path, **NODE_TOKENS)``) guard ``/internal/*``, which
+  agents use, in the same way: open until the first token exists.
+
+Administrators pass both (see ``swarm.coordinator``). Only a SHA-256 of each
+secret is stored; the secret itself is shown once, when it is created.
 """
 
 from __future__ import annotations
@@ -16,9 +20,10 @@ import time
 from typing import Callable
 
 PREFIX = "sk-swarm-"
+NODE_TOKENS = {"table": "node_tokens", "prefix": "nt-swarm-", "id_prefix": "node_"}
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS api_keys (
+CREATE TABLE IF NOT EXISTS {table} (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL,
     hint TEXT NOT NULL,
@@ -38,20 +43,22 @@ def _digest(secret: str) -> str:
 
 
 class KeyStore:
-    def __init__(self, path: str = ":memory:", clock: Callable[[], float] = time.time):
+    def __init__(self, path: str = ":memory:", clock: Callable[[], float] = time.time,
+                 table: str = "api_keys", prefix: str = PREFIX, id_prefix: str = "key_"):
         self.clock = clock
+        self.table, self.prefix, self.id_prefix = table, prefix, id_prefix
         self.lock = threading.Lock()
         self.db = sqlite3.connect(path, check_same_thread=False, isolation_level=None)
         self.db.row_factory = sqlite3.Row
         if path != ":memory:":
             self.db.execute("PRAGMA journal_mode=WAL")
-        self.db.executescript(SCHEMA)
+        self.db.executescript(SCHEMA.replace("{table}", table))
         self._active: dict[str, str] = {}  # hash -> id, for revocation-free lookups
         self._load()
 
     def _load(self) -> None:
         with self.lock:
-            rows = self.db.execute("SELECT id, hash FROM api_keys WHERE revoked_at IS NULL").fetchall()
+            rows = self.db.execute(f"SELECT id, hash FROM {self.table} WHERE revoked_at IS NULL").fetchall()
         self._active = {r["hash"]: r["id"] for r in rows}
 
     @property
@@ -60,12 +67,12 @@ class KeyStore:
         return bool(self._active)
 
     def create(self, name: str) -> tuple[dict, str]:
-        secret = PREFIX + secrets.token_hex(24)
-        key_id = "key_" + secrets.token_hex(6)
+        secret = self.prefix + secrets.token_hex(24)
+        key_id = self.id_prefix + secrets.token_hex(6)
         with self.lock:
             self.db.execute(
-                "INSERT INTO api_keys (id, name, hint, hash, created_at) VALUES (?, ?, ?, ?, ?)",
-                (key_id, name.strip() or key_id, secret[:len(PREFIX) + 4] + "…" + secret[-4:],
+                f"INSERT INTO {self.table} (id, name, hint, hash, created_at) VALUES (?, ?, ?, ?, ?)",
+                (key_id, name.strip() or key_id, secret[:len(self.prefix) + 4] + "…" + secret[-4:],
                  _digest(secret), self.clock()),
             )
         self._load()
@@ -74,7 +81,7 @@ class KeyStore:
     def revoke(self, key_id: str) -> bool:
         with self.lock:
             cur = self.db.execute(
-                "UPDATE api_keys SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (self.clock(), key_id)
+                f"UPDATE {self.table} SET revoked_at=? WHERE id=? AND revoked_at IS NULL", (self.clock(), key_id)
             )
         self._load()
         return cur.rowcount == 1
@@ -86,19 +93,19 @@ class KeyStore:
     def record(self, key_id: str, prompt_tokens: int = 0, completion_tokens: int = 0) -> None:
         with self.lock:
             self.db.execute(
-                "UPDATE api_keys SET requests=requests+1, prompt_tokens=prompt_tokens+?, "
+                f"UPDATE {self.table} SET requests=requests+1, prompt_tokens=prompt_tokens+?, "
                 "completion_tokens=completion_tokens+?, last_used_at=? WHERE id=?",
                 (prompt_tokens, completion_tokens, self.clock(), key_id),
             )
 
     def get(self, key_id: str) -> dict | None:
         with self.lock:
-            row = self.db.execute("SELECT * FROM api_keys WHERE id=?", (key_id,)).fetchone()
+            row = self.db.execute(f"SELECT * FROM {self.table} WHERE id=?", (key_id,)).fetchone()
         return self._public(row) if row else None
 
     def list(self) -> list[dict]:
         with self.lock:
-            rows = self.db.execute("SELECT * FROM api_keys ORDER BY created_at DESC").fetchall()
+            rows = self.db.execute(f"SELECT * FROM {self.table} ORDER BY created_at DESC").fetchall()
         return [self._public(r) for r in rows]
 
     @staticmethod
