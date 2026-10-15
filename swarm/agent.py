@@ -36,6 +36,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import signal
 import socket
 import subprocess
@@ -98,6 +99,18 @@ def node_info() -> dict:
         "chip": sysctl("machdep.cpu.brand_string"),
         "mem_total_gb": round(int(sysctl("hw.memsize") or 0) / 2**30, 1),
     }
+
+
+def worker_info(worker_args: list[str]) -> dict:
+    """What the dashboard shows about the worker's options."""
+    def value(flag):
+        return worker_args[worker_args.index(flag) + 1] if flag in worker_args[:-1] else None
+
+    info = {}
+    if draft := value("--draft-model"):
+        info["draft_model"] = Path(draft.rstrip("/")).name
+        info["num_draft_tokens"] = int(value("--num-draft-tokens") or 3)
+    return info
 
 
 class Agent:
@@ -230,7 +243,9 @@ class Agent:
                     "url": self.worker_url,
                     "model": self.model_name,
                     "speed": self.args.speed or node_speed(),
-                    "info": {**node_info(), **({"pipeline": self.group} if self.group else {})},
+                    "info": {**node_info(), **worker_info(self.worker_args),
+                             **({"pipeline": self.group} if self.group else {}),
+                             "job_slots": self.args.job_slots},
                 },
             )
             r.raise_for_status()
@@ -251,7 +266,7 @@ class Agent:
             try:
                 r = self.http.post(
                     f"{self.coordinator}/internal/nodes/{self.node_id}/heartbeat",
-                    json={"memory_free_pct": memory_free_pct()},
+                    json={"memory_free_pct": memory_free_pct(), "stats": self.stats()},
                 )
                 if r.status_code == 404:  # coordinator restarted and forgot us
                     self.register()
@@ -265,6 +280,16 @@ class Agent:
         if self.auto and self.failed_heartbeats >= REDISCOVER_AFTER:
             self.failed_heartbeats = 0
             self.rediscover()
+
+    def stats(self) -> dict:
+        with self.leases_lock:
+            leases = len(self.leases)
+        return {
+            "disk_free_gb": round(shutil.disk_usage(Path.home()).free / 2**30, 1),
+            "load1": round(os.getloadavg()[0], 2),
+            "batch_tasks": leases,
+            "worker_restarts": len(self.restarts),
+        }
 
     def deregister(self) -> None:
         try:
@@ -313,6 +338,7 @@ class Agent:
     def run_task(self, task: dict) -> None:
         task_id, token = task["task_id"], task["token"]
         report = {"node_id": self.node_id, "token": token}
+        started = time.monotonic()
         try:
             try:
                 r = httpx.post(self.local_url + task["url"],
@@ -326,6 +352,7 @@ class Agent:
                                             "retryable": r.status_code >= 500}
             except (httpx.HTTPError, ValueError) as e:
                 path, report = "fail", {**report, "error": repr(e), "retryable": True}
+            report["seconds"] = round(time.monotonic() - started, 3)
             for _ in range(3):  # the coordinator may be restarting
                 try:
                     resp = httpx.post(f"{self.coordinator}/internal/tasks/{task_id}/{path}",

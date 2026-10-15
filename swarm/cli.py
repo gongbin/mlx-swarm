@@ -8,11 +8,13 @@
     swarm jobs submit FILE.jsonl [--model M] [--wait]  batch job (OpenAI Batch input format)
     swarm jobs list | status ID | results ID [-o F] | cancel ID
     swarm discover                                     find coordinators via mDNS
+    swarm ui                                           open the web dashboard
     swarm plan --model DIR --hostfile H                how a model splits over a pipeline group
     swarm service install|uninstall|status ROLE ...    run as a launchd login agent
 
 Without --coordinator, commands use $SWARM_COORDINATOR, a coordinator on this
-Mac, or the one advertised on the local network (mDNS).
+Mac, or the one advertised on the local network (mDNS). Once the coordinator has
+API keys, chat and jobs need --api-key or $SWARM_API_KEY.
 """
 
 from __future__ import annotations
@@ -20,6 +22,14 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+
+def auth_headers(key: str | None) -> dict:
+    """--api-key or $SWARM_API_KEY, for a coordinator that has API keys."""
+    import os
+
+    key = key or os.environ.get("SWARM_API_KEY")
+    return {"authorization": f"Bearer {key}"} if key else {}
+
 
 def coordinator_url(value: str | None) -> str:
     """--coordinator, $SWARM_COORDINATOR, this Mac's coordinator, or one found via mDNS."""
@@ -62,6 +72,7 @@ def chat(argv: list[str]) -> None:
     parser.add_argument("--max-tokens", type=int, default=512)
     parser.add_argument("--session", default=None)
     parser.add_argument("--coordinator", default=None, help="default: auto-discover")
+    parser.add_argument("--api-key", default=None, help="default: $SWARM_API_KEY")
     args = parser.parse_args(argv)
     body = {
         "messages": [{"role": "user", "content": args.prompt}],
@@ -70,7 +81,7 @@ def chat(argv: list[str]) -> None:
     }
     if args.model:
         body["model"] = args.model
-    headers = {"x-session-id": args.session} if args.session else {}
+    headers = {**auth_headers(args.api_key), **({"x-session-id": args.session} if args.session else {})}
     url = coordinator_url(args.coordinator) + "/v1/chat/completions"
     with httpx.stream("POST", url, json=body, headers=headers, timeout=600) as r:
         if r.status_code != 200:
@@ -117,6 +128,7 @@ def jobs(argv: list[str]) -> None:
 
     parser = argparse.ArgumentParser(prog="swarm jobs")
     parser.add_argument("--coordinator", default=None, help="default: auto-discover")
+    parser.add_argument("--api-key", default=None, help="default: $SWARM_API_KEY")
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("submit")
     p.add_argument("file")
@@ -135,7 +147,7 @@ def jobs(argv: list[str]) -> None:
     base = coordinator_url(args.coordinator) + "/v1/jobs"
 
     def call(method, url, **kw):
-        r = httpx.request(method, url, timeout=60, **kw)
+        r = httpx.request(method, url, timeout=60, headers=auth_headers(args.api_key), **kw)
         if r.status_code >= 400:
             sys.exit(f"error {r.status_code}: {r.text}")
         return r
@@ -194,6 +206,16 @@ def discover(argv: list[str]) -> None:
             print(f"  {url}  {'ok' if reachable(url) else 'unreachable'}")
 
 
+def ui(argv: list[str]) -> None:
+    import webbrowser
+
+    parser = argparse.ArgumentParser(prog="swarm ui", description="open the dashboard in a browser")
+    parser.add_argument("--coordinator", default=None, help="default: auto-discover")
+    url = coordinator_url(parser.parse_args(argv).coordinator) + "/"
+    print(url)
+    webbrowser.open(url)
+
+
 def main() -> None:
     commands = {
         "coordinator": lambda argv: __import__("swarm.coordinator").coordinator.main(argv),
@@ -203,6 +225,7 @@ def main() -> None:
         "chat": chat,
         "jobs": jobs,
         "discover": discover,
+        "ui": ui,
         "plan": lambda argv: __import__("swarm.planner").planner.main(argv),
         "service": lambda argv: __import__("swarm.service").service.main(argv),
     }

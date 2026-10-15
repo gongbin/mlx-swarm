@@ -83,3 +83,19 @@ def test_reregister_with_new_url_resets_counters(reg):
     reg.nodes["m5"].served = 5
     reg.register("m5", "http://a:9000", "Qwen3-8B-4bit", speed=122)
     assert reg.nodes["m5"].served == 0
+
+
+def test_metrics_spread_tokens_over_generation_time():
+    from swarm.metrics import BUCKET_S, Metrics
+
+    now = [1000.0]
+    m = Metrics(clock=lambda: now[0])
+    m.record("m5", "q", "chat", prompt_tokens=10, completion_tokens=200, seconds=10.0, ttft_s=0.5)
+    s = m.summary()
+    row = s["series"]["m5"]
+    assert abs(sum(row) * BUCKET_S - 200) < 1e-6  # all tokens accounted for
+    assert row[-1] == row[-2] == 20.0  # 20 tok/s in the last two buckets
+    assert s["nodes"]["m5"]["tok_s"] == round(200 / 60, 2)
+    assert s["nodes"]["m5"]["ttft_p50_s"] == 0.5
+    now[0] += 700  # beyond the window
+    assert m.summary()["series"] == {} and m.summary()["totals"]["completion_tokens"] == 200

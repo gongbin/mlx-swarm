@@ -32,6 +32,9 @@ class Node:
     served: int = 0
     failures: int = 0
     cooldown_until: float = 0.0
+    draining: bool = False  # set from the dashboard: no new requests or batch tasks
+    stats: dict = field(default_factory=dict)  # from heartbeats: disk, load, ...
+    registered_at: float = 0.0
 
     def healthy(self, now: float) -> bool:
         return (
@@ -55,6 +58,9 @@ class Node:
             "inflight": self.inflight,
             "served": self.served,
             "failures": self.failures,
+            "draining": self.draining,
+            "up_s": round(now - self.registered_at, 1),
+            "stats": self.stats,
             "info": self.info,
         }
 
@@ -72,7 +78,7 @@ class Registry:
     def register(self, node_id: str, url: str, model: str, speed: float = 1.0, info=None) -> Node:
         node = self.nodes.get(node_id)
         if node is None or node.url != url or node.model != model:
-            node = Node(node_id, url, model)
+            node = Node(node_id, url, model, registered_at=self.clock())
             self.nodes[node_id] = node
         node.speed = speed
         node.info = info or {}
@@ -80,12 +86,14 @@ class Registry:
         node.cooldown_until = 0.0
         return node
 
-    def heartbeat(self, node_id: str, memory_free_pct: float | None = None) -> bool:
+    def heartbeat(self, node_id: str, memory_free_pct: float | None = None, stats: dict | None = None) -> bool:
         node = self.nodes.get(node_id)
         if node is None:
             return False
         node.last_seen = self.clock()
         node.memory_free_pct = memory_free_pct
+        if stats is not None:
+            node.stats = stats
         return True
 
     def deregister(self, node_id: str) -> None:
@@ -100,7 +108,8 @@ class Registry:
         candidates = [
             n
             for n in self.nodes.values()
-            if n.healthy(now) and n.node_id not in exclude and (model is None or n.model == model)
+            if n.healthy(now) and not n.draining and n.node_id not in exclude
+            and (model is None or n.model == model)
         ]
         if model is None and len({n.model for n in candidates}) > 1:
             raise NoNodeAvailable("several models are served; set the 'model' field")

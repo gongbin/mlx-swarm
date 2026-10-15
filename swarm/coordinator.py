@@ -11,22 +11,37 @@ lease tasks for the model they serve and post results back.
 The coordinator advertises itself on mDNS (``_mlxswarm._tcp``), so agents and
 the CLI find it without an address (see ``swarm.discovery``).
 
-    swarm coordinator --host 0.0.0.0 --port 8000 --db jobs.sqlite3
+``/`` serves the dashboard (``swarm/ui.html``): nodes, live throughput, a chat
+playground, batch jobs and API keys. Access control:
+
+- ``/v1/*`` is open until the first API key is created (see ``swarm.keys``);
+  from then on it needs ``Authorization: Bearer <key>``, or an administrator;
+- ``/admin/*`` (dashboard management) needs an administrator: a request from
+  this Mac itself, or one carrying the ``--admin-token``;
+- ``/internal/*`` (agents) and ``/health``, ``/nodes`` stay open on the LAN.
+
+    swarm coordinator --host 0.0.0.0 --port 8000 --db jobs.sqlite3 [--admin-token T]
 """
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
+import os
 import re
+import socket
 import time
 from contextlib import asynccontextmanager
+from importlib import resources
 
 import httpx
 from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Response, StreamingResponse
 
 from swarm.jobs import JobError, JobStore
+from swarm.keys import KeyStore
+from swarm.metrics import Metrics
 from swarm.router import NoNodeAvailable, Registry
 
 log = logging.getLogger("swarm.coordinator")
@@ -40,11 +55,75 @@ def error(status: int, message: str, kind: str = "invalid_request_error") -> JSO
     return JSONResponse({"error": {"message": message, "type": kind}}, status_code=status)
 
 
+LOOPBACK = {"127.0.0.1", "::1", "localhost"}
+
+
+def bearer(request: Request) -> str | None:
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth[:7].lower() == "bearer " else None
+
+
+def usage_of(payload: dict) -> tuple[int, int]:
+    u = payload.get("usage") or {}
+    return int(u.get("prompt_tokens") or 0), int(u.get("completion_tokens") or 0)
+
+
+class AccessControl:
+    """ASGI middleware: API keys on /v1/*, administrators on /admin/*.
+
+    Sets ``scope["state"]["key"]`` to the caller's key id ("admin" for an
+    administrator, None on an open API) for usage accounting.
+    """
+
+    def __init__(self, app, keys: KeyStore, admin_token: str | None, trust_local: bool):
+        self.app = app
+        self.keys = keys
+        self.admin_token = admin_token
+        self.trust_local = trust_local
+
+    def is_admin(self, request: Request) -> bool:
+        token = bearer(request)
+        if self.admin_token and token and hmac.compare_digest(token, self.admin_token):
+            return True
+        if not self.trust_local or request.client is None:
+            return False
+        client = request.client.host
+        server = (request.scope.get("server") or ("",))[0]
+        return client in LOOPBACK or client == server  # a browser on this Mac
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        request = Request(scope)
+        path = scope["path"]
+        state = scope.setdefault("state", {})
+        state["admin"] = self.is_admin(request)
+        denied = None
+        if path.startswith("/admin/") and path != "/admin/session" and not state["admin"]:
+            denied = error(403, "administrator only: use this Mac or the coordinator's --admin-token",
+                           "permission_error")
+        elif path.startswith("/v1/"):
+            key = self.keys.verify(bearer(request))
+            if key:
+                state["key"] = key
+            elif state["admin"]:
+                state["key"] = "admin"
+            elif self.keys.required:
+                denied = error(401, "missing or invalid API key (Authorization: Bearer sk-swarm-...)",
+                               "authentication_error")
+        if denied is not None:
+            return await denied(scope, receive, send)
+        await self.app(scope, receive, send)
+
+
 def create_app(registry: Registry | None = None, client: httpx.AsyncClient | None = None,
-               store: JobStore | None = None) -> FastAPI:
+               store: JobStore | None = None, keys: KeyStore | None = None,
+               admin_token: str | None = None, trust_local: bool = True) -> FastAPI:
     reg = registry or Registry()
     http = client or httpx.AsyncClient(timeout=UPSTREAM_TIMEOUT)
     jobs = store or JobStore()
+    keys = keys or KeyStore()
+    metrics = Metrics()
 
     @asynccontextmanager
     async def lifespan(app):
@@ -54,6 +133,16 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
     app = FastAPI(title="mlx-swarm coordinator", lifespan=lifespan)
     app.state.registry = reg
     app.state.jobs = jobs
+    app.state.keys = keys
+    app.state.metrics = metrics
+    app.add_middleware(AccessControl, keys=keys, admin_token=admin_token, trust_local=trust_local)
+
+    def account(request: Request, node, model, kind, payload: dict | None, seconds, ttft=None, ok=True):
+        p, c = usage_of(payload or {})
+        key = request.state.key if hasattr(request.state, "key") else None
+        metrics.record(node.node_id, node.model, kind, key, p, c, seconds, ttft, ok)
+        if key and key != "admin":
+            keys.record(key, p, c)
 
     @app.post("/internal/nodes/register")
     async def register(body: dict):
@@ -65,7 +154,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
 
     @app.post("/internal/nodes/{node_id}/heartbeat")
     async def heartbeat(node_id: str, body: dict):
-        if not reg.heartbeat(node_id, body.get("memory_free_pct")):
+        if not reg.heartbeat(node_id, body.get("memory_free_pct"), body.get("stats")):
             return error(404, f"unknown node {node_id}; register first")
         return {"ok": True}
 
@@ -99,9 +188,16 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         model = body.get("model")
         session = request.headers.get("x-session-id") or body.get("user")
         stream = bool(body.get("stream"))
+        kind = "chat" if path.endswith("chat/completions") else "completion"
         # Workers only serve their pinned model; name it explicitly so a stock
         # mlx_lm.server would not try to load the client's model name either.
         upstream = {**body, "model": WORKER_MODEL}
+        # Always ask for the usage chunk when streaming (for accounting); it is
+        # passed on only if the client asked for it too.
+        client_options = body.get("stream_options") if isinstance(body.get("stream_options"), dict) else {}
+        wants_usage = bool(client_options.get("include_usage"))
+        if stream:
+            upstream["stream_options"] = {**client_options, "include_usage": True}
         pinned = re.compile(rb'"model":\s*"%s"' % re.escape(WORKER_MODEL.encode()))
         client_model = b'"model": ' + json.dumps(model).encode() if model else None
 
@@ -127,6 +223,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
             except httpx.TransportError as e:
                 node.inflight -= 1
                 reg.failed(node)
+                account(request, node, model, kind, None, time.perf_counter() - started, ok=False)
                 last_problem = f"{node.node_id}: {e!r}"
                 log.warning("worker %s unreachable: %r", node.node_id, e)
                 continue
@@ -134,6 +231,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
                 await resp.aclose()
                 node.inflight -= 1
                 reg.failed(node)
+                account(request, node, model, kind, None, time.perf_counter() - started, ok=False)
                 last_problem = f"{node.node_id}: HTTP {resp.status_code}"
                 log.warning("worker %s returned %s", node.node_id, resp.status_code)
                 continue
@@ -146,7 +244,14 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
                     await resp.aclose()
                     node.inflight -= 1
                 node.served += 1
-                log.info("%s -> %s %.2fs", path, node.node_id, time.perf_counter() - started)
+                elapsed = time.perf_counter() - started
+                try:
+                    payload = json.loads(data)
+                except ValueError:
+                    payload = None
+                account(request, node, model, kind, payload if isinstance(payload, dict) else None,
+                        elapsed, ok=resp.status_code < 400)
+                log.info("%s -> %s %.2fs", path, node.node_id, elapsed)
                 return Response(
                     restore(data),
                     status_code=resp.status_code,
@@ -155,18 +260,38 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
                 )
 
             async def relay(resp=resp, node=node, started=started):
+                usage, ttft, ok, skip_blank = None, None, False, False
                 try:
                     # Line by line, so the model-name rewrite never straddles chunks.
                     async for line in resp.aiter_lines():
+                        if skip_blank and not line:
+                            skip_blank = False
+                            continue
+                        if line.startswith("data: {"):
+                            if ttft is None:
+                                ttft = time.perf_counter() - started
+                            if '"usage"' in line:
+                                try:
+                                    chunk = json.loads(line[6:])
+                                except ValueError:
+                                    chunk = {}
+                                if chunk.get("usage") and not chunk.get("choices"):
+                                    usage = chunk
+                                    if not wants_usage:
+                                        skip_blank = True
+                                        continue
                         yield restore(line.encode()) + b"\n"
                     node.served += 1
+                    ok = True
                 except httpx.TransportError as e:
                     reg.failed(node)
                     log.warning("stream from %s broke: %r", node.node_id, e)
                 finally:
                     await resp.aclose()
                     node.inflight -= 1
-                    log.info("%s -> %s %.2fs (stream)", path, node.node_id, time.perf_counter() - started)
+                    elapsed = time.perf_counter() - started
+                    account(request, node, model, kind, usage, elapsed, ttft, ok and resp.status_code < 400)
+                    log.info("%s -> %s %.2fs (stream)", path, node.node_id, elapsed)
 
             return StreamingResponse(
                 relay(),
@@ -228,7 +353,7 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         node = reg.nodes.get(body["node_id"])
         if node is None:
             return error(404, f"unknown node {body['node_id']}; register first")
-        if not node.healthy(reg.clock()):
+        if node.draining or not node.healthy(reg.clock()):
             return {"tasks": []}
         return {"tasks": jobs.lease(node.node_id, node.model, int(body.get("max", 1)))}
 
@@ -243,6 +368,10 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
             result["model"] = body.get("model") or result["model"]
         if not jobs.complete(task_id, body["token"], body["node_id"], result):
             return error(409, "stale fencing token; result discarded", "conflict")
+        node = reg.nodes.get(body["node_id"])
+        if node is not None:
+            p, c = usage_of(result if isinstance(result, dict) else {})
+            metrics.record(node.node_id, node.model, "batch", None, p, c, float(body.get("seconds") or 0))
         return {"ok": True}
 
     @app.post("/internal/tasks/{task_id}/fail")
@@ -250,7 +379,71 @@ def create_app(registry: Registry | None = None, client: httpx.AsyncClient | Non
         if not jobs.fail(task_id, body["token"], body["node_id"], body.get("error", ""),
                          bool(body.get("retryable", True))):
             return error(409, "stale fencing token", "conflict")
+        node = reg.nodes.get(body["node_id"])
+        if node is not None:
+            metrics.record(node.node_id, node.model, "batch", ok=False,
+                           seconds=float(body.get("seconds") or 0))
         return {"ok": True}
+
+    # -- dashboard ----------------------------------------------------------
+    ui = resources.files("swarm").joinpath("ui.html")
+
+    @app.get("/", include_in_schema=False)
+    async def dashboard():
+        return HTMLResponse(ui.read_text(encoding="utf-8"), headers={"cache-control": "no-cache"})
+
+    @app.get("/admin/session")
+    async def session(request: Request):
+        """What the caller may do: lets the dashboard ask for a token when needed."""
+        return {"admin": request.state.admin, "keys_required": keys.required,
+                "key": keys.verify(bearer(request)) is not None}
+
+    @app.get("/admin/overview")
+    async def overview():
+        now = reg.clock()
+        return {
+            "coordinator": {"host": socket.gethostname(), "pid": os.getpid(),
+                            "keys_required": keys.required},
+            "nodes": [n.to_dict(now) for n in reg.nodes.values()],
+            "models": reg.models(),
+            "backlog": jobs.model_backlog(),
+            "metrics": metrics.summary(),
+        }
+
+    @app.post("/admin/nodes/{node_id}/drain")
+    async def drain(node_id: str, body: dict):
+        node = reg.nodes.get(node_id)
+        if node is None:
+            return error(404, f"no node {node_id}")
+        node.draining = bool(body.get("draining", True))
+        log.info("node %s %s", node_id, "draining" if node.draining else "back in service")
+        return node.to_dict(reg.clock())
+
+    @app.delete("/admin/nodes/{node_id}")
+    async def remove_node(node_id: str):
+        """Forget a node (e.g. a Mac that is gone); a live agent re-registers on its next heartbeat."""
+        if node_id not in reg.nodes:
+            return error(404, f"no node {node_id}")
+        reg.deregister(node_id)
+        log.info("removed node %s", node_id)
+        return {"ok": True}
+
+    @app.get("/admin/keys")
+    async def list_keys():
+        return {"data": keys.list(), "required": keys.required}
+
+    @app.post("/admin/keys")
+    async def create_key(body: dict):
+        record, secret = keys.create(str(body.get("name") or ""))
+        log.info("created API key %s (%s)", record["id"], record["name"])
+        return JSONResponse({**record, "key": secret}, status_code=201)
+
+    @app.delete("/admin/keys/{key_id}")
+    async def revoke_key(key_id: str):
+        if not keys.revoke(key_id):
+            return error(404, f"no active key {key_id}")
+        log.info("revoked API key %s", key_id)
+        return {"ok": True, "required": keys.required}
 
     return app
 
@@ -266,10 +459,13 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--db", default="jobs.sqlite3", help="batch job queue (SQLite file)")
     parser.add_argument("--name", default=None, help="mDNS service name; default: short hostname")
     parser.add_argument("--no-mdns", action="store_true", help="do not advertise on the local network")
+    parser.add_argument("--admin-token", default=os.environ.get("SWARM_ADMIN_TOKEN"),
+                        help="lets other machines manage the cluster from the dashboard "
+                             "(default: $SWARM_ADMIN_TOKEN; without it, only this Mac can)")
     parser.add_argument("--log-level", default="info")
     args = parser.parse_args(argv)
     logging.basicConfig(level=args.log_level.upper(), format="%(asctime)s %(name)s %(message)s")
-    app = create_app(store=JobStore(args.db))
+    app = create_app(store=JobStore(args.db), keys=KeyStore(args.db), admin_token=args.admin_token)
     advertiser = None
     if not args.no_mdns:
         from swarm.discovery import Advertiser

@@ -1,0 +1,1355 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>mlx-swarm</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%23e8590c'/%3E%3Ccircle cx='10' cy='11' r='3' fill='white'/%3E%3Ccircle cx='22' cy='11' r='3' fill='white'/%3E%3Ccircle cx='16' cy='22' r='3' fill='white'/%3E%3C/svg%3E">
+<style>
+:root {
+  --bg: #f6f6f4; --panel: #ffffff; --panel-2: #f0efec; --border: #e2e0db; --text: #1d1d1b;
+  --muted: #6d6b66; --accent: #e8590c; --accent-soft: #fde8dc; --ok: #2f9e44; --warn: #e67700;
+  --bad: #e03131; --info: #1c7ed6; --code-bg: #f3f2ef; --shadow: 0 1px 2px rgba(0,0,0,.05);
+  --user-bubble: #fde8dc;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #141413; --panel: #1d1d1b; --panel-2: #262624; --border: #33322f; --text: #ecebe7;
+    --muted: #9c9a93; --accent: #ff7a35; --accent-soft: #3a2418; --ok: #51cf66; --warn: #ffa94d;
+    --bad: #ff6b6b; --info: #4dabf7; --code-bg: #262624; --shadow: none; --user-bubble: #3a2418;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #141413; --panel: #1d1d1b; --panel-2: #262624; --border: #33322f; --text: #ecebe7;
+  --muted: #9c9a93; --accent: #ff7a35; --accent-soft: #3a2418; --ok: #51cf66; --warn: #ffa94d;
+  --bad: #ff6b6b; --info: #4dabf7; --code-bg: #262624; --shadow: none; --user-bubble: #3a2418;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; }
+body {
+  background: var(--bg); color: var(--text);
+  font: 14px/1.5 -apple-system, BlinkMacSystemFont, "SF Pro Text", "PingFang SC", "Helvetica Neue", sans-serif;
+}
+code, pre, .mono { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; }
+a { color: var(--accent); }
+button, input, select, textarea { font: inherit; color: inherit; }
+button {
+  border: 1px solid var(--border); background: var(--panel); border-radius: 7px; padding: 5px 11px;
+  cursor: pointer;
+}
+button:hover { border-color: var(--muted); }
+button.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+button.primary:hover { filter: brightness(1.06); }
+button.danger { color: var(--bad); }
+button.small { padding: 2px 8px; font-size: 12px; }
+button:disabled { opacity: .5; cursor: default; }
+input[type=text], input[type=password], input[type=number], select, textarea {
+  background: var(--panel); border: 1px solid var(--border); border-radius: 7px; padding: 6px 9px; width: 100%;
+}
+textarea { resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--accent-soft); border-color: var(--accent); }
+label { display: block; color: var(--muted); font-size: 12px; margin: 10px 0 4px; }
+
+header {
+  position: sticky; top: 0; z-index: 5; display: flex; align-items: center; gap: 18px;
+  padding: 0 20px; height: 52px; background: var(--panel); border-bottom: 1px solid var(--border);
+}
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 650; letter-spacing: -.01em; }
+.brand .dot { width: 22px; height: 22px; border-radius: 6px; background: var(--accent); display: grid; place-items: center; }
+nav { display: flex; gap: 2px; height: 100%; }
+nav a {
+  white-space: nowrap;
+  display: flex; align-items: center; padding: 0 12px; color: var(--muted); text-decoration: none;
+  border-bottom: 2px solid transparent; margin-bottom: -1px;
+}
+nav a.active { color: var(--text); border-bottom-color: var(--accent); }
+.spacer { flex: 1; }
+.who { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.badge {
+  display: inline-flex; align-items: center; gap: 5px; border-radius: 999px; padding: 1px 8px;
+  font-size: 12px; background: var(--panel-2); color: var(--muted); white-space: nowrap;
+}
+.badge.ok { color: var(--ok); } .badge.bad { color: var(--bad); } .badge.warn { color: var(--warn); }
+.badge.accent { color: var(--accent); background: var(--accent-soft); }
+.led { width: 8px; height: 8px; border-radius: 50%; background: currentColor; display: inline-block; }
+
+main { max-width: 1240px; margin: 0 auto; padding: 20px; }
+.page { display: none; }
+.page.active { display: block; }
+h2 { font-size: 15px; margin: 26px 0 10px; font-weight: 600; }
+h2:first-child { margin-top: 0; }
+.panel { background: var(--panel); border: 1px solid var(--border); border-radius: 10px; box-shadow: var(--shadow); }
+.pad { padding: 14px 16px; }
+.muted { color: var(--muted); }
+.row { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 12px; }
+.stat .v { font-size: 24px; font-weight: 600; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
+.stat .k { color: var(--muted); font-size: 12px; }
+.chart-wrap { position: relative; height: 190px; }
+canvas { display: block; width: 100%; height: 100%; }
+.legend { display: flex; gap: 14px; flex-wrap: wrap; font-size: 12px; color: var(--muted); margin-top: 6px; }
+.legend i { display: inline-block; width: 10px; height: 10px; border-radius: 3px; margin-right: 5px; vertical-align: -1px; }
+
+.nodes { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 12px; }
+.node .top { display: flex; align-items: flex-start; gap: 10px; }
+.node .name { font-weight: 600; font-size: 15px; word-break: break-all; }
+.node .sub { color: var(--muted); font-size: 12px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 3px 12px; margin-top: 10px; font-size: 13px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-variant-numeric: tabular-nums; word-break: break-all; }
+.bar { height: 6px; border-radius: 3px; background: var(--panel-2); overflow: hidden; margin-top: 4px; }
+.bar > span { display: block; height: 100%; background: var(--ok); }
+.node .actions { display: flex; gap: 6px; margin-top: 12px; }
+.node.down { opacity: .7; }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th { text-align: left; color: var(--muted); font-weight: 500; font-size: 12px; }
+th, td { padding: 7px 10px; border-bottom: 1px solid var(--border); white-space: nowrap; }
+tr:last-child td { border-bottom: none; }
+td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
+.table-scroll { overflow-x: auto; }
+.empty { padding: 26px; text-align: center; color: var(--muted); }
+
+/* chat */
+.chat { display: grid; grid-template-columns: 270px 1fr; gap: 14px; height: calc(100vh - 170px); min-height: 460px; }
+.chat aside { overflow-y: auto; }
+.chat .conv { display: flex; flex-direction: column; min-height: 0; }
+.messages { flex: 1; overflow-y: auto; padding: 18px 20px; display: flex; flex-direction: column; gap: 16px; }
+.msg { max-width: 100%; }
+.msg.user { align-self: flex-end; max-width: 80%; background: var(--user-bubble); border-radius: 12px; padding: 8px 13px; white-space: pre-wrap; }
+.msg.assistant .body { line-height: 1.6; }
+.msg.assistant .body p { margin: 0 0 .7em; }
+.msg.assistant .body p:last-child { margin-bottom: 0; }
+.msg.assistant .body pre { background: var(--code-bg); border-radius: 8px; padding: 10px 12px; overflow-x: auto; }
+.msg.assistant .body code { background: var(--code-bg); border-radius: 4px; padding: 0 4px; }
+.msg.assistant .body pre code { padding: 0; background: none; }
+.msg.assistant .body h1, .msg.assistant .body h2, .msg.assistant .body h3 { font-size: 15px; margin: .9em 0 .4em; }
+.msg.assistant .body ul, .msg.assistant .body ol { padding-left: 1.4em; margin: .3em 0 .7em; }
+.msg .meta { color: var(--muted); font-size: 11.5px; margin-top: 6px; display: flex; gap: 10px; flex-wrap: wrap; }
+.msg .error { color: var(--bad); }
+details.think { color: var(--muted); font-size: 13px; margin-bottom: 8px; border-left: 2px solid var(--border); padding-left: 10px; }
+details.think summary { cursor: pointer; }
+details.think div { white-space: pre-wrap; }
+.composer { border-top: 1px solid var(--border); padding: 12px; display: flex; gap: 8px; align-items: flex-end; }
+.composer textarea { min-height: 44px; max-height: 200px; }
+.composer button { white-space: nowrap; min-width: 72px; height: 44px; }
+.caret::after { content: "▍"; color: var(--accent); animation: blink 1s steps(2) infinite; }
+@keyframes blink { 50% { opacity: 0; } }
+.check { display: flex; align-items: center; gap: 7px; margin-top: 12px; color: var(--text); font-size: 13px; }
+.check input { width: auto; }
+
+/* jobs */
+.progress { width: 160px; height: 8px; border-radius: 4px; background: var(--panel-2); overflow: hidden; display: flex; }
+.progress span { height: 100%; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; }
+
+/* api */
+pre.snippet { background: var(--code-bg); border-radius: 8px; padding: 12px; overflow-x: auto; margin: 8px 0 0; }
+.secret { background: var(--code-bg); border: 1px dashed var(--accent); border-radius: 8px; padding: 10px; word-break: break-all; }
+.tabs { display: flex; gap: 4px; }
+.tabs button.on { background: var(--accent-soft); border-color: var(--accent); color: var(--accent); }
+
+dialog {
+  border: 1px solid var(--border); border-radius: 12px; background: var(--panel); color: var(--text);
+  padding: 20px; width: min(460px, calc(100vw - 32px));
+}
+dialog::backdrop { background: rgba(0,0,0,.35); }
+.toast {
+  position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--text); color: var(--bg);
+  padding: 8px 14px; border-radius: 8px; font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none; z-index: 20;
+}
+.toast.show { opacity: .92; }
+.notice { border-left: 3px solid var(--warn); background: var(--panel); padding: 10px 14px; border-radius: 6px; margin-bottom: 14px; }
+
+.brand { color: var(--text); text-decoration: none; }
+button.ghost { background: transparent; }
+.gh { color: var(--muted); display: inline-flex; padding: 4px; border-radius: 6px; }
+.gh:hover { color: var(--text); background: var(--panel-2); }
+.page-head { margin: 4px 0 20px; }
+.page-head h1 { font-size: 22px; font-weight: 650; letter-spacing: -.02em; margin: 0; }
+.page-head p { color: var(--muted); margin: 4px 0 0; }
+footer {
+  max-width: 1240px; margin: 0 auto; padding: 22px 20px 36px; color: var(--muted); font-size: 12.5px;
+  display: flex; gap: 8px; flex-wrap: wrap; align-items: center; border-top: 1px solid var(--border);
+}
+footer a { color: var(--muted); text-decoration: none; display: inline-flex; align-items: center; gap: 5px; }
+footer a:hover { color: var(--text); }
+body.chat-page footer { display: none; }
+
+/* docs */
+html[lang="en"] [data-lang="zh"], html[lang="zh-CN"] [data-lang="en"] { display: none !important; }
+.docs { display: grid; grid-template-columns: 220px minmax(0, 1fr); gap: 28px; align-items: start; }
+.toc { position: sticky; top: 72px; display: flex; flex-direction: column; gap: 1px; }
+.toc button {
+  text-align: left; border: none; background: none; padding: 6px 10px; border-radius: 6px; color: var(--muted);
+}
+.toc button:hover, .toc button.on { background: var(--panel-2); color: var(--text); }
+.doc { padding: 6px 34px 34px; max-width: 860px; line-height: 1.7; font-size: 14.5px; }
+.doc h3 { font-size: 19px; letter-spacing: -.01em; margin: 34px 0 8px; padding-top: 8px; scroll-margin-top: 70px; }
+.doc h3:first-child { margin-top: 18px; }
+.doc h4 { font-size: 14.5px; margin: 20px 0 6px; }
+.doc p, .doc li { color: var(--text); }
+.doc ol, .doc ul { padding-left: 1.3em; }
+.doc li { margin: 4px 0; }
+.doc code { background: var(--code-bg); border-radius: 4px; padding: 1px 5px; }
+.doc pre { position: relative; background: var(--code-bg); border-radius: 8px; padding: 12px 14px; overflow-x: auto; line-height: 1.55; }
+.doc pre code { background: none; padding: 0; }
+.doc pre .copy { position: absolute; top: 6px; right: 6px; opacity: 0; transition: opacity .15s; }
+.doc pre:hover .copy { opacity: 1; }
+.doc table { margin: 10px 0; border: 1px solid var(--border); border-radius: 8px; border-collapse: separate; border-spacing: 0; overflow: hidden; }
+.doc td, .doc th { white-space: normal; vertical-align: top; }
+.doc th { background: var(--panel-2); }
+.callout { border-left: 3px solid var(--accent); background: var(--accent-soft); padding: 10px 14px; border-radius: 6px; margin: 12px 0; }
+.arch { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; margin: 14px 0; text-align: center; font-size: 13px; }
+.arch div { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--panel-2); }
+.arch b { display: block; margin-bottom: 2px; }
+
+@media (max-width: 760px) {
+  .docs { grid-template-columns: minmax(0, 1fr); }
+  .doc table { display: block; overflow-x: auto; }
+  .toc { position: static; flex-direction: row; flex-wrap: wrap; }
+  .doc { padding: 4px 16px 24px; }
+  .arch { grid-template-columns: 1fr; }
+  header { padding: 0 16px; gap: 10px; height: auto; flex-wrap: wrap; }
+  header .brand { height: 48px; }
+  nav { order: 3; width: 100%; height: 42px; overflow-x: auto; margin: 0 -16px; padding: 0 8px; width: calc(100% + 32px); border-top: 1px solid var(--border); }
+  footer { flex-direction: column; align-items: flex-start; gap: 4px; padding: 20px 16px 30px; }
+  footer .sep { display: none; }
+  main { padding: 16px; }
+  .chat { grid-template-columns: 1fr; height: auto; }
+  .chat .conv { height: 70vh; }
+  .grid2 { grid-template-columns: 1fr; }
+  .nodes { grid-template-columns: 1fr; }
+}
+</style>
+</head>
+<body>
+<header>
+  <a class="brand" href="#overview"><div class="dot"><svg width="14" height="14" viewBox="0 0 32 32"><circle cx="9" cy="10" r="4" fill="#fff"/><circle cx="23" cy="10" r="4" fill="#fff"/><circle cx="16" cy="23" r="4" fill="#fff"/></svg></div><span>mlx-swarm</span></a>
+  <nav>
+    <a href="#overview" data-i18n="nav.overview">Overview</a>
+    <a href="#chat" data-i18n="nav.chat">Chat</a>
+    <a href="#jobs" data-i18n="nav.jobs">Batch jobs</a>
+    <a href="#api" data-i18n="nav.api">API</a>
+    <a href="#docs" data-i18n="nav.docs">Docs</a>
+  </nav>
+  <div class="spacer"></div>
+  <div class="who">
+    <span id="who" class="badge"></span>
+    <button class="small ghost" id="token-btn" data-i18n="auth.token">Token</button>
+    <button class="small ghost" id="lang-btn">中文</button>
+    <a class="gh" href="https://github.com/gongbin/mlx-swarm" target="_blank" rel="noopener" title="GitHub"><svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg></a>
+  </div>
+</header>
+
+<main>
+  <!-- overview -->
+  <section class="page" id="page-overview">
+    <div class="page-head"><h1 data-i18n="ov.h">Cluster overview</h1><p data-i18n="ov.sub">Live health, memory and throughput of every Mac serving models.</p></div>
+    <div class="stats">
+      <div class="panel pad stat"><div class="v" id="s-nodes">–</div><div class="k" data-i18n="ov.nodes">Healthy nodes</div></div>
+      <div class="panel pad stat"><div class="v" id="s-tps">–</div><div class="k" data-i18n="ov.tps">Output tok/s (last min)</div></div>
+      <div class="panel pad stat"><div class="v" id="s-inflight">–</div><div class="k" data-i18n="ov.inflight">Requests in flight</div></div>
+      <div class="panel pad stat"><div class="v" id="s-queued">–</div><div class="k" data-i18n="ov.queued">Queued batch tasks</div></div>
+      <div class="panel pad stat"><div class="v" id="s-requests">–</div><div class="k" data-i18n="ov.requests">Requests since start</div></div>
+      <div class="panel pad stat"><div class="v" id="s-tokens">–</div><div class="k" data-i18n="ov.tokens">Tokens generated</div></div>
+    </div>
+    <h2 data-i18n="ov.throughput">Throughput, last 10 minutes</h2>
+    <div class="panel pad">
+      <div class="chart-wrap"><canvas id="chart"></canvas></div>
+      <div class="legend" id="legend"></div>
+    </div>
+    <h2 data-i18n="ov.nodesTitle">Nodes</h2>
+    <div class="nodes" id="nodes"></div>
+    <h2 data-i18n="ov.recent">Recent requests</h2>
+    <div class="panel table-scroll"><table id="recent"></table></div>
+  </section>
+
+  <!-- chat -->
+  <section class="page" id="page-chat">
+    <div class="page-head"><h1 data-i18n="chat.h">Chat playground</h1><p data-i18n="chat.sub">Talk to any model the cluster serves, with live speed and routing details.</p></div>
+    <div class="chat">
+      <aside class="panel pad">
+        <label data-i18n="chat.model">Model</label>
+        <select id="c-model"></select>
+        <label data-i18n="chat.system">System prompt</label>
+        <textarea id="c-system" rows="3"></textarea>
+        <label><span data-i18n="chat.temperature">Temperature</span> <span id="c-temp-v" class="mono"></span></label>
+        <input id="c-temp" type="range" min="0" max="1.5" step="0.05" value="0.7" style="width:100%">
+        <label><span data-i18n="chat.topp">Top-p</span> <span id="c-topp-v" class="mono"></span></label>
+        <input id="c-topp" type="range" min="0.05" max="1" step="0.05" value="0.9" style="width:100%">
+        <label data-i18n="chat.maxTokens">Max tokens</label>
+        <input id="c-max" type="number" min="1" max="32768" value="1024">
+        <label class="check"><input type="checkbox" id="c-think"> <span data-i18n="chat.thinking">Thinking (Qwen3)</span></label>
+        <div class="row" style="margin-top:16px">
+          <button id="c-new" data-i18n="chat.new">New chat</button>
+        </div>
+        <p class="muted" style="font-size:12px;margin-top:16px" data-i18n="chat.hint">A conversation stays on one node so its prompt cache is reused.</p>
+      </aside>
+      <div class="panel conv">
+        <div class="messages" id="messages"></div>
+        <div class="composer">
+          <textarea id="c-input" rows="1" data-i18n-ph="chat.placeholder" placeholder="Message (Enter to send, Shift+Enter for a new line)"></textarea>
+          <button class="primary" id="c-send" data-i18n="chat.send">Send</button>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- jobs -->
+  <section class="page" id="page-jobs">
+    <div class="page-head"><h1 data-i18n="jobs.h">Batch jobs</h1><p data-i18n="jobs.sub">Run thousands of prompts across all Macs; every result is saved exactly once.</p></div>
+    <div class="grid2">
+      <div class="panel pad">
+        <h2 data-i18n="jobs.submit">Submit a batch</h2>
+        <label data-i18n="chat.model">Model</label>
+        <select id="j-model"></select>
+        <label data-i18n="jobs.input">Prompts: one per line, or OpenAI Batch JSONL</label>
+        <textarea id="j-input" rows="7" class="mono" placeholder='What is unified memory?
+{"custom_id": "q2", "body": {"messages": [{"role": "user", "content": "Hi"}]}}'></textarea>
+        <div class="row" style="margin-top:10px">
+          <input type="file" id="j-file" accept=".jsonl,.txt,.json" style="flex:1;min-width:0">
+          <div style="width:120px"><input id="j-max" type="number" value="512" min="1" title="max_tokens"></div>
+          <button class="primary" id="j-submit" data-i18n="jobs.submitBtn">Submit</button>
+        </div>
+        <p class="muted" style="font-size:12px" data-i18n="jobs.hint">Each Mac pulls tasks at its own pace; a task's result is saved exactly once.</p>
+      </div>
+      <div class="panel pad">
+        <h2 data-i18n="jobs.cli">From the command line</h2>
+        <pre class="snippet mono">uv run swarm jobs submit tasks.jsonl \
+    --model <span class="jm">MODEL</span> --wait -o results.jsonl</pre>
+        <p class="muted" style="font-size:12px" data-i18n="jobs.format">Input lines are {"custom_id", "body"} (OpenAI Batch format) or {"prompt": "..."}; results are JSONL with one line per task.</p>
+      </div>
+    </div>
+    <h2 data-i18n="jobs.title">Jobs</h2>
+    <div class="panel table-scroll"><table id="jobs"></table></div>
+  </section>
+
+  <!-- api -->
+  <section class="page" id="page-api">
+    <div class="page-head"><h1 data-i18n="api.h">API access</h1><p data-i18n="api.sub">OpenAI-compatible endpoint, API keys and usage.</p></div>
+    <div id="api-admin-note" class="notice" style="display:none" data-i18n="api.adminOnly">Managing keys needs an administrator: open this page on the coordinator's Mac, or enter the coordinator's admin token.</div>
+    <div class="grid2">
+      <div class="panel pad">
+        <h2 data-i18n="api.endpoint">Endpoint</h2>
+        <div class="row"><code class="mono" id="api-base" style="flex:1;word-break:break-all"></code><button class="small" data-copy="#api-base" data-i18n="copy">Copy</button></div>
+        <p class="muted" style="font-size:12px" data-i18n="api.compat">OpenAI-compatible: /v1/chat/completions, /v1/completions, /v1/models, /v1/jobs. Works with any OpenAI SDK.</p>
+        <div id="api-access" style="margin-top:8px"></div>
+      </div>
+      <div class="panel pad">
+        <h2 data-i18n="api.newKey">Create an API key</h2>
+        <label data-i18n="api.keyName">Name (who or what uses it)</label>
+        <div class="row"><input type="text" id="k-name" style="flex:1"><button class="primary" id="k-create" data-i18n="api.create">Create</button></div>
+        <p class="muted" style="font-size:12px" data-i18n="api.keyHint">Once the first key exists, every /v1 request needs a key. Revoke all keys to open the API again.</p>
+      </div>
+    </div>
+    <h2 data-i18n="api.keys">API keys</h2>
+    <div class="panel table-scroll"><table id="keys"></table></div>
+    <h2 data-i18n="api.examples">Examples</h2>
+    <div class="panel pad">
+      <div class="tabs" id="ex-tabs">
+        <button class="small on" data-ex="curl">curl</button>
+        <button class="small" data-ex="python">Python</button>
+        <button class="small" data-ex="node">Node.js</button>
+      </div>
+      <pre class="snippet mono" id="example"></pre>
+    </div>
+  </section>
+  <!-- docs -->
+  <section class="page" id="page-docs">
+    <div class="page-head"><h1 data-i18n="docs.h">Documentation</h1><p data-i18n="docs.sub">Set up the cluster, add Macs, deploy models and run it day to day.</p></div>
+    <div class="docs">
+      <div class="toc" id="toc">
+        <button data-doc="how" data-i18n="docs.how">How it works</button>
+        <button data-doc="install" data-i18n="docs.install">Install</button>
+        <button data-doc="model" data-i18n="docs.model">Get a model</button>
+        <button data-doc="coord" data-i18n="docs.coord">Start the coordinator</button>
+        <button data-doc="node" data-i18n="docs.node">Add a Mac</button>
+        <button data-doc="pipeline" data-i18n="docs.pipeline">Split a large model</button>
+        <button data-doc="spec" data-i18n="docs.spec">Speculative decoding</button>
+        <button data-doc="use" data-i18n="docs.use">Use the API</button>
+        <button data-doc="ops" data-i18n="docs.ops">Operate the cluster</button>
+        <button data-doc="security" data-i18n="docs.security">Security</button>
+        <button data-doc="trouble" data-i18n="docs.trouble">Troubleshooting</button>
+      </div>
+
+      <!-- English -->
+      <article class="panel doc" data-lang="en">
+        <h3 id="doc-en-how">How it works</h3>
+        <p>mlx-swarm turns a few Apple Silicon Macs into one inference service. There are three roles:</p>
+        <div class="arch">
+          <div><b>Coordinator</b>one per cluster: OpenAI-compatible API, routing, failover, batch queue, this dashboard</div>
+          <div><b>Agent</b>one per Mac: finds the coordinator over Bonjour, supervises the worker, reports health, runs batch tasks</div>
+          <div><b>Worker</b>an MLX server holding one model, inside the Mac's memory budget</div>
+        </div>
+        <p>Macs serve models in two ways, and you can mix them:</p>
+        <ul>
+          <li><b>Replicas</b>: each Mac holds the whole model. Requests go to the least-loaded Mac; a conversation stays on the Mac that has its prompt cache. Best for throughput.</li>
+          <li><b>Pipeline groups</b>: a model too large for one Mac is split by layers across several Macs (Thunderbolt or Ethernet). The group appears as one node.</li>
+        </ul>
+
+        <h3 id="doc-en-install">Install</h3>
+        <p>Requirements: Apple Silicon Macs running macOS 14 or later, with all of them on the same network. A Thunderbolt cable between Macs is the fastest link for pipeline groups. Run on every Mac:</p>
+<pre><code>curl -LsSf https://astral.sh/uv/install.sh | sh          # Python package manager
+git clone https://github.com/gongbin/mlx-swarm.git ~/mlx-swarm
+cd ~/mlx-swarm && uv sync</code></pre>
+        <div class="callout">Keep the project outside <code>~/Documents</code>, <code>~/Desktop</code> and <code>~/Downloads</code>. macOS blocks background services from those folders unless you grant extra permissions.</div>
+
+        <h3 id="doc-en-model">Get a model</h3>
+        <p>Any model that <a href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noopener">mlx-lm</a> can load works. Ready-made quantized models are on Hugging Face under <a href="https://huggingface.co/mlx-community" target="_blank" rel="noopener">mlx-community</a>. Put them under <code>models/</code>:</p>
+<pre><code># from Hugging Face
+uvx --from huggingface_hub hf download mlx-community/Qwen3-8B-4bit --local-dir models/Qwen3-8B-4bit
+
+# from the ModelScope mirror (faster in mainland China)
+sh bench/fetch_model.sh Qwen3-8B-4bit
+
+# or quantize an original model yourself
+uv run mlx_lm.convert --hf-path Qwen/Qwen3-8B -q --q-bits 4 --mlx-path models/Qwen3-8B-4bit</code></pre>
+        <p>Each Mac needs its own copy at the same relative path. Copy it from a Mac that already has it:</p>
+<pre><code>rsync -a --progress models/Qwen3-8B-4bit/ other-mac.local:mlx-swarm/models/Qwen3-8B-4bit/</code></pre>
+        <h4>How large a model fits?</h4>
+        <p>A worker uses at most about 60% of the GPU's working set by default (<code>--mem-budget-gb</code> changes it), so the Mac stays usable. As a rule of thumb, the weights' size on disk plus 2 GB for the KV cache must fit that budget. A 16 GB Mac holds an 8B 4-bit model (4.6 GB) comfortably; larger models go to a bigger Mac or a pipeline group. Before every load the worker checks free memory and disk (20 GB minimum by default), and it refuses to start rather than make macOS swap.</p>
+
+        <h3 id="doc-en-coord">Start the coordinator</h3>
+        <p>Pick one Mac, usually the one that is always on. Install the coordinator there as a login service, which restarts after crashes and reboots:</p>
+<pre><code>uv run swarm service install coordinator
+uv run swarm ui        # opens this dashboard</code></pre>
+        <p>It listens on port 8000 and announces itself over Bonjour, so agents on the network find it without configuration. To manage the cluster from other machines, give it an admin token (see <a href="#docs" data-jump="security">Security</a>):</p>
+<pre><code>uv run swarm service install coordinator --admin-token "$(openssl rand -hex 16)"</code></pre>
+
+        <h3 id="doc-en-node">Add a Mac to the cluster</h3>
+        <ol>
+          <li><a href="#docs" data-jump="install">Install</a> mlx-swarm and <a href="#docs" data-jump="model">copy the model</a> to the new Mac.</li>
+          <li>Optional: measure its memory bandwidth, which the router uses as the Mac's speed: <code>uv run python bench/probe.py</code>.</li>
+          <li>Install the agent as a login service:
+<pre><code>uv run swarm service install agent --model models/Qwen3-8B-4bit --job-slots 4</code></pre></li>
+          <li>When macOS asks to allow the app to <b>find devices on the local network</b>, allow it. Without this permission the agent cannot reach the coordinator.</li>
+          <li>Within a few seconds the Mac appears on the <a href="#overview">Overview</a> page (or run <code>uv run swarm nodes</code>).</li>
+        </ol>
+        <p>Useful agent options (other options are passed through to the MLX server):</p>
+        <table>
+          <tr><th>Option</th><th>Meaning</th></tr>
+          <tr><td><code>--model DIR</code></td><td>model to serve; clients call it by the directory name (change with <code>--served-name</code>)</td></tr>
+          <tr><td><code>--job-slots N</code></td><td>batch tasks this Mac runs at once (default 2, 0 for none)</td></tr>
+          <tr><td><code>--decode-concurrency N</code></td><td>interactive requests batched together by the worker</td></tr>
+          <tr><td><code>--mem-budget-gb G</code></td><td>memory cap for the worker</td></tr>
+          <tr><td><code>--draft-model DIR</code></td><td>enable <a href="#docs" data-jump="spec">speculative decoding</a></td></tr>
+          <tr><td><code>--hostfile FILE</code></td><td>run a <a href="#docs" data-jump="pipeline">pipeline group</a> instead of a single Mac</td></tr>
+          <tr><td><code>--coordinator URL</code></td><td>skip Bonjour discovery, e.g. <code>http://10.0.0.5:8000</code></td></tr>
+          <tr><td><code>--allow-sleep</code></td><td>let the Mac sleep while serving (it is kept awake by default)</td></tr>
+        </table>
+        <p>To serve another model on the same Mac, run <code>service install agent</code> again with the new <code>--model</code>. The new install replaces the old one. To take the Mac out of the cluster, run <code>uv run swarm service uninstall agent</code>.</p>
+
+        <h3 id="doc-en-pipeline">Split a model too large for one Mac</h3>
+        <p>You do not slice files by hand. Every Mac in the group keeps the full model directory at the same path, and each one loads only its own layers. The planner picks how many layers go where, from each Mac's memory budget and bandwidth.</p>
+        <h4>1. Describe the group in a hostfile</h4>
+        <p>The first entry is the Mac that starts the group. <code>ips</code> is the address the Macs use to talk to each other; a Thunderbolt link-local address is best.</p>
+<pre><code>[
+  {"name": "studio", "ssh": "127.0.0.1",       "ips": ["169.254.10.1"], "mem_budget_gb": 20,  "bandwidth_gbs": 122},
+  {"name": "mini",   "ssh": "me@mini.local",   "ips": ["169.254.10.2"], "mem_budget_gb": 8.5, "bandwidth_gbs": 101}
+]</code></pre>
+        <h4>2. Check the plan (nothing is loaded)</h4>
+<pre><code>uv run swarm plan --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json</code></pre>
+        <p>It prints the layers and memory per Mac, the expected tok/s, and whether a single Mac would be faster. <code>--mode throughput</code> leaves more room for concurrent requests.</p>
+        <h4>3. Start the group</h4>
+<pre><code>uv run swarm service install agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json --job-slots 0</code></pre>
+        <p>The first Mac must be able to <code>ssh</code> into the others without a password, and every Mac needs the same project path and the same <code>uv.lock</code>. Only the first Mac runs an agent for the group. If any member fails, the whole group restarts.</p>
+
+        <h3 id="doc-en-spec">Speculative decoding</h3>
+        <p>A small draft model from the same family guesses a few tokens ahead and the large model checks them in one pass. The output is unchanged, and a single stream gets about 2× faster. mlx-swarm uses it only while a request runs alone. When other requests arrive, the running request is handed to normal batching mid-stream, so throughput under load does not drop.</p>
+<pre><code>sh bench/fetch_model.sh Qwen3-0.6B-4bit
+uv run swarm service install agent --model models/Qwen3-8B-4bit --draft-model models/Qwen3-0.6B-4bit --num-draft-tokens 3</code></pre>
+
+        <h3 id="doc-en-use">Use the API</h3>
+        <p>Point any OpenAI SDK at <code>http://&lt;coordinator&gt;:8000/v1</code>. See the <a href="#api">API</a> page for your address, keys and code samples.</p>
+        <ul>
+          <li><b>Model name</b>: the directory name, e.g. <code>Qwen3-8B-4bit</code>. <code>GET /v1/models</code> lists what is being served.</li>
+          <li><b>Conversations</b>: send the same <code>X-Session-Id</code> header (or OpenAI <code>user</code> field) for every turn. The conversation then stays on one Mac and reuses its prompt cache.</li>
+          <li><b>Qwen3 thinking</b>: pass <code>"chat_template_kwargs": {"enable_thinking": false}</code> to turn it off.</li>
+          <li><b>Batch jobs</b>: <code>uv run swarm jobs submit tasks.jsonl --model Qwen3-8B-4bit --wait -o results.jsonl</code>, or use the <a href="#jobs">Batch jobs</a> page. Each line is <code>{"custom_id": "...", "body": {...}}</code> (OpenAI Batch format) or simply <code>{"prompt": "..."}</code>.</li>
+          <li><b>CLI</b>: <code>swarm chat "Hello"</code>, <code>swarm nodes</code>, <code>swarm jobs list</code>. With API keys enabled, set <code>SWARM_API_KEY</code>.</li>
+        </ul>
+
+        <h3 id="doc-en-ops">Operate the cluster</h3>
+        <ul>
+          <li><b>Drain</b> a node on the Overview page before maintenance. It finishes its running requests but gets no new ones. <b>Resume</b> brings it back.</li>
+          <li><b>Remove</b> forgets a Mac that is gone for good. A live agent registers again on its next heartbeat.</li>
+          <li><b>Services</b>: <code>uv run swarm service status</code>, <code>uv run swarm service logs agent -n 100</code> (logs live in <code>~/Library/Logs/mlx-swarm/</code>).</li>
+          <li><b>Upgrade</b>: <code>git pull &amp;&amp; uv sync</code> on every Mac, then run the same <code>service install</code> command again to restart with the new code. Batch jobs survive coordinator restarts.</li>
+          <li><b>Failures</b>: a crashed worker is restarted by its agent, and a crashed agent by launchd. Requests move to other Macs, and leased batch tasks return to the queue after 30 s.</li>
+        </ul>
+
+        <h3 id="doc-en-security">Security</h3>
+        <ul>
+          <li>The API is open until you create the first key on the <a href="#api">API</a> page. From then on every <code>/v1</code> request needs <code>Authorization: Bearer sk-swarm-…</code>. Keys are stored hashed and shown once.</li>
+          <li>Managing the cluster (nodes, keys) is allowed from the coordinator's own Mac, or with the coordinator's <code>--admin-token</code>, which you enter with the <b>Token</b> button.</li>
+          <li>Agents talk to the coordinator without authentication, so run the cluster on a network you trust. To expose the API to the internet, put it behind a reverse proxy with TLS, and enable API keys.</li>
+        </ul>
+
+        <h3 id="doc-en-trouble">Troubleshooting</h3>
+        <table>
+          <tr><th>Symptom</th><th>Fix</th></tr>
+          <tr><td>A Mac never shows up</td><td>Run <code>uv run swarm discover</code> on it. If nothing is found, allow <i>Local Network</i> for the Python app in System Settings › Privacy &amp; Security, or pass <code>--coordinator http://IP:8000</code>.</td></tr>
+          <tr><td>Agent log stays empty after install</td><td>The project is in a protected folder. Move it to <code>~/mlx-swarm</code>, or give Full Disk Access to uv's Python.</td></tr>
+          <tr><td><code>refusing to run</code> in the log</td><td>The resource guard stopped a load that would not fit. Free disk space (20 GB minimum), close memory-hungry apps, or use a smaller model or a pipeline group.</td></tr>
+          <tr><td>A node is marked offline</td><td>No heartbeat for 15 s, or less than 10% memory free. Check <code>swarm service logs agent</code> on that Mac.</td></tr>
+          <tr><td>Pipeline group does not start</td><td>Check passwordless <code>ssh</code> from the first Mac, the same project path and <code>uv.lock</code> on each Mac, and that the <code>ips</code> in the hostfile are reachable.</td></tr>
+        </table>
+      </article>
+
+      <!-- 中文 -->
+      <article class="panel doc" data-lang="zh">
+        <h3 id="doc-zh-how">工作原理</h3>
+        <p>mlx-swarm 把几台 Apple Silicon Mac 组成一个推理服务，其中有三种角色：</p>
+        <div class="arch">
+          <div><b>Coordinator</b>每个集群一个：OpenAI 兼容 API、路由、故障切换、批量队列、本控制台</div>
+          <div><b>Agent</b>每台 Mac 一个：通过 Bonjour 找到 Coordinator，守护 Worker，上报健康状态，执行批量任务</div>
+          <div><b>Worker</b>加载一个模型的 MLX 服务，内存用量限制在本机预算以内</div>
+        </div>
+        <p>Mac 有两种部署方式，可以混用：</p>
+        <ul>
+          <li><b>副本</b>：每台 Mac 都加载完整模型。请求发给最空闲的 Mac，同一个对话留在持有其 prompt cache 的机器上。适合追求吞吐量。</li>
+          <li><b>流水线组</b>：单台装不下的模型按层切分到多台 Mac 上（通过雷雳线或以太网），整个组作为一个节点对外服务。</li>
+        </ul>
+
+        <h3 id="doc-zh-install">安装</h3>
+        <p>要求：运行 macOS 14 或更高版本的 Apple Silicon Mac，所有机器在同一网络。流水线组最好用雷雳线把 Mac 直连。在每台 Mac 上运行：</p>
+<pre><code>curl -LsSf https://astral.sh/uv/install.sh | sh          # Python 包管理器
+git clone https://github.com/gongbin/mlx-swarm.git ~/mlx-swarm
+cd ~/mlx-swarm && uv sync</code></pre>
+        <div class="callout">不要把项目放在 <code>~/Documents</code>、<code>~/Desktop</code> 或 <code>~/Downloads</code> 下。macOS 默认不允许后台服务访问这些文件夹，需要额外授权。</div>
+
+        <h3 id="doc-zh-model">获取模型</h3>
+        <p>只要 <a href="https://github.com/ml-explore/mlx-lm" target="_blank" rel="noopener">mlx-lm</a> 能加载的模型都可以使用。Hugging Face 上的 <a href="https://huggingface.co/mlx-community" target="_blank" rel="noopener">mlx-community</a> 提供现成的量化模型。模型放在 <code>models/</code> 下：</p>
+<pre><code># 从 Hugging Face 下载
+uvx --from huggingface_hub hf download mlx-community/Qwen3-8B-4bit --local-dir models/Qwen3-8B-4bit
+
+# 从 ModelScope 镜像下载（国内更快）
+sh bench/fetch_model.sh Qwen3-8B-4bit
+
+# 或者自己量化原始模型
+uv run mlx_lm.convert --hf-path Qwen/Qwen3-8B -q --q-bits 4 --mlx-path models/Qwen3-8B-4bit</code></pre>
+        <p>每台 Mac 都需要在相同的相对路径下有一份模型。可以从已有模型的 Mac 上复制：</p>
+<pre><code>rsync -a --progress models/Qwen3-8B-4bit/ other-mac.local:mlx-swarm/models/Qwen3-8B-4bit/</code></pre>
+        <h4>多大的模型能装下？</h4>
+        <p>为了不影响 Mac 的日常使用，Worker 默认最多使用 GPU 工作集的约 60%（可以用 <code>--mem-budget-gb</code> 调整）。粗略估算：模型文件大小加上 2 GB KV cache 不能超过这个预算。16 GB 的 Mac 可以轻松运行 8B 4-bit 模型（4.6 GB）。更大的模型请放到内存更大的 Mac 上，或者使用流水线组。每次加载前 Worker 都会检查空闲内存和磁盘空间（默认至少 20 GB），如果放不下就拒绝启动，而不是让 macOS 开始换页。</p>
+
+        <h3 id="doc-zh-coord">启动 Coordinator</h3>
+        <p>选一台 Mac，通常是一直开着的那台。把 Coordinator 安装为登录服务，崩溃或重启后会自动恢复：</p>
+<pre><code>uv run swarm service install coordinator
+uv run swarm ui        # 打开本控制台</code></pre>
+        <p>它监听 8000 端口，并通过 Bonjour 广播自己，网络中的 Agent 无需配置就能找到它。如果想在其他机器上管理集群，请给它设置管理员令牌（见<a href="#docs" data-jump="security">安全</a>）：</p>
+<pre><code>uv run swarm service install coordinator --admin-token "$(openssl rand -hex 16)"</code></pre>
+
+        <h3 id="doc-zh-node">添加一台 Mac</h3>
+        <ol>
+          <li>在新 Mac 上<a href="#docs" data-jump="install">安装</a> mlx-swarm，并<a href="#docs" data-jump="model">复制模型</a>。</li>
+          <li>可选：测量本机内存带宽（路由器把它作为这台 Mac 的速度）：<code>uv run python bench/probe.py</code>。</li>
+          <li>把 Agent 安装为登录服务：
+<pre><code>uv run swarm service install agent --model models/Qwen3-8B-4bit --job-slots 4</code></pre></li>
+          <li>macOS 询问是否允许<b>查找本地网络上的设备</b>时，点「允许」。没有这项权限，Agent 无法连接 Coordinator。</li>
+          <li>几秒钟后，这台 Mac 会出现在<a href="#overview">总览</a>页面（也可以运行 <code>uv run swarm nodes</code>）。</li>
+        </ol>
+        <p>常用的 Agent 参数（其他参数会原样传给 MLX 服务）：</p>
+        <table>
+          <tr><th>参数</th><th>含义</th></tr>
+          <tr><td><code>--model DIR</code></td><td>要部署的模型；客户端用目录名调用（可以用 <code>--served-name</code> 修改）</td></tr>
+          <tr><td><code>--job-slots N</code></td><td>这台 Mac 同时执行的批量任务数（默认 2，0 表示不接批量任务）</td></tr>
+          <tr><td><code>--decode-concurrency N</code></td><td>Worker 合并成一批处理的交互请求数</td></tr>
+          <tr><td><code>--mem-budget-gb G</code></td><td>Worker 的内存上限</td></tr>
+          <tr><td><code>--draft-model DIR</code></td><td>启用<a href="#docs" data-jump="spec">投机解码</a></td></tr>
+          <tr><td><code>--hostfile FILE</code></td><td>运行<a href="#docs" data-jump="pipeline">流水线组</a>，而不是单台 Mac</td></tr>
+          <tr><td><code>--coordinator URL</code></td><td>跳过 Bonjour 自动发现，例如 <code>http://10.0.0.5:8000</code></td></tr>
+          <tr><td><code>--allow-sleep</code></td><td>服务期间允许 Mac 休眠（默认保持唤醒）</td></tr>
+        </table>
+        <p>要在同一台 Mac 上换一个模型，用新的 <code>--model</code> 再运行一次 <code>service install agent</code>，新安装会替换旧的。要让这台 Mac 退出集群，运行 <code>uv run swarm service uninstall agent</code>。</p>
+
+        <h3 id="doc-zh-pipeline">切分单机装不下的模型</h3>
+        <p>不需要手动切分文件。组内每台 Mac 都在相同路径下保存完整的模型目录，各自只加载自己负责的层。每台 Mac 分多少层，由规划器根据各自的内存预算和带宽决定。</p>
+        <h4>1. 用 hostfile 描述这个组</h4>
+        <p>第一项是启动这个组的 Mac。<code>ips</code> 是 Mac 之间互相通信的地址，最好使用雷雳线的链路本地地址。</p>
+<pre><code>[
+  {"name": "studio", "ssh": "127.0.0.1",       "ips": ["169.254.10.1"], "mem_budget_gb": 20,  "bandwidth_gbs": 122},
+  {"name": "mini",   "ssh": "me@mini.local",   "ips": ["169.254.10.2"], "mem_budget_gb": 8.5, "bandwidth_gbs": 101}
+]</code></pre>
+        <h4>2. 查看规划（不会加载模型）</h4>
+<pre><code>uv run swarm plan --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json</code></pre>
+        <p>输出每台 Mac 分到的层数和内存、预计 tok/s，以及单机运行是否会更快。<code>--mode throughput</code> 会为并发请求留出更多内存。</p>
+        <h4>3. 启动这个组</h4>
+<pre><code>uv run swarm service install agent --model models/Qwen3-30B-A3B-6bit --hostfile hosts.json --job-slots 0</code></pre>
+        <p>第一台 Mac 需要能免密 <code>ssh</code> 登录其他机器，每台 Mac 的项目路径和 <code>uv.lock</code> 都要相同。整个组只在第一台 Mac 上运行一个 Agent。任何一台成员故障时，整个组会一起重启。</p>
+
+        <h3 id="doc-zh-spec">投机解码</h3>
+        <p>用同系列的小草稿模型先猜几个 token，再由大模型一次性验证。输出不变，单路速度约提高 2 倍。mlx-swarm 只在一个请求单独运行时使用投机解码。一有其他请求进来，正在生成的请求会在中途转入普通批处理，因此高负载下的吞吐量不会下降。</p>
+<pre><code>sh bench/fetch_model.sh Qwen3-0.6B-4bit
+uv run swarm service install agent --model models/Qwen3-8B-4bit --draft-model models/Qwen3-0.6B-4bit --num-draft-tokens 3</code></pre>
+
+        <h3 id="doc-zh-use">调用 API</h3>
+        <p>把任意 OpenAI SDK 指向 <code>http://&lt;coordinator&gt;:8000/v1</code> 即可。你的地址、Key 和示例代码见 <a href="#api">API</a> 页面。</p>
+        <ul>
+          <li><b>模型名</b>：模型的目录名，例如 <code>Qwen3-8B-4bit</code>。<code>GET /v1/models</code> 列出当前部署的模型。</li>
+          <li><b>多轮对话</b>：每一轮都带上相同的 <code>X-Session-Id</code> 请求头（或 OpenAI 的 <code>user</code> 字段），对话就会留在同一台 Mac 上，复用其 prompt cache。</li>
+          <li><b>Qwen3 思考模式</b>：传入 <code>"chat_template_kwargs": {"enable_thinking": false}</code> 即可关闭。</li>
+          <li><b>批量任务</b>：<code>uv run swarm jobs submit tasks.jsonl --model Qwen3-8B-4bit --wait -o results.jsonl</code>，或者使用<a href="#jobs">批量任务</a>页面。每行是 <code>{"custom_id": "...", "body": {...}}</code>（OpenAI Batch 格式），或者直接写 <code>{"prompt": "..."}</code>。</li>
+          <li><b>命令行</b>：<code>swarm chat "你好"</code>、<code>swarm nodes</code>、<code>swarm jobs list</code>。启用 API Key 后，需要设置 <code>SWARM_API_KEY</code>。</li>
+        </ul>
+
+        <h3 id="doc-zh-ops">日常运维</h3>
+        <ul>
+          <li>维护前，在总览页面<b>排空</b>节点：它会处理完正在运行的请求，但不再接收新请求。点击<b>恢复</b>重新上线。</li>
+          <li><b>移除</b>：从集群中删除一台已经不再使用的 Mac。如果它的 Agent 仍在运行，下次心跳时会重新注册。</li>
+          <li><b>服务</b>：<code>uv run swarm service status</code>、<code>uv run swarm service logs agent -n 100</code>（日志在 <code>~/Library/Logs/mlx-swarm/</code>）。</li>
+          <li><b>升级</b>：在每台 Mac 上运行 <code>git pull &amp;&amp; uv sync</code>，再运行一次原来的 <code>service install</code> 命令，以新代码重启。Coordinator 重启不会丢失批量任务。</li>
+          <li><b>故障</b>：Worker 崩溃后由 Agent 重启，Agent 崩溃后由 launchd 拉起。请求会转到其他 Mac 上，已领取的批量任务在 30 秒后回到队列。</li>
+        </ul>
+
+        <h3 id="doc-zh-security">安全</h3>
+        <ul>
+          <li>在 <a href="#api">API</a> 页面创建第一个 Key 之前，API 是开放的。之后，所有 <code>/v1</code> 请求都需要 <code>Authorization: Bearer sk-swarm-…</code>。Key 以哈希形式保存，只在创建时显示一次。</li>
+          <li>管理集群（节点、Key）只能在 Coordinator 所在的 Mac 上进行，或者使用 Coordinator 的 <code>--admin-token</code>（点击<b>令牌</b>按钮输入）。</li>
+          <li>Agent 与 Coordinator 之间的通信目前没有鉴权，请在可信的网络中运行集群。如果要把 API 开放到公网，请放在支持 TLS 的反向代理后面，并启用 API Key。</li>
+        </ul>
+
+        <h3 id="doc-zh-trouble">常见问题</h3>
+        <table>
+          <tr><th>现象</th><th>解决方法</th></tr>
+          <tr><td>某台 Mac 一直没有出现</td><td>在那台 Mac 上运行 <code>uv run swarm discover</code>。如果找不到 Coordinator，在「系统设置 › 隐私与安全性 › 本地网络」里允许对应的 Python 程序，或者加上 <code>--coordinator http://IP:8000</code>。</td></tr>
+          <tr><td>安装服务后 Agent 日志一直为空</td><td>项目在受保护的文件夹中。把项目移到 <code>~/mlx-swarm</code>，或者给 uv 的 Python 授予「完全磁盘访问权限」。</td></tr>
+          <tr><td>日志中出现 <code>refusing to run</code></td><td>资源保护阻止了一次放不下的加载。请清理磁盘（至少 20 GB）、关闭占用内存多的程序，或者换用更小的模型、流水线组。</td></tr>
+          <tr><td>节点显示离线</td><td>15 秒没有心跳，或者空闲内存低于 10%。在那台 Mac 上查看 <code>swarm service logs agent</code>。</td></tr>
+          <tr><td>流水线组无法启动</td><td>检查第一台 Mac 能否免密 <code>ssh</code> 登录其他机器，各台 Mac 的项目路径和 <code>uv.lock</code> 是否相同，hostfile 中的 <code>ips</code> 是否可达。</td></tr>
+        </table>
+      </article>
+    </div>
+  </section>
+</main>
+
+<footer>
+  <span><b>mlx-swarm</b></span><span class="sep">·</span>
+  <span data-i18n="footer.tag">Open-source LLM inference across Apple Silicon Macs, built on MLX</span><span class="sep">·</span>
+  <a href="https://github.com/gongbin/mlx-swarm/blob/main/LICENSE" target="_blank" rel="noopener">Apache-2.0</a><span class="sep">·</span>
+  <a href="https://github.com/gongbin/mlx-swarm" target="_blank" rel="noopener"><svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg> github.com/gongbin/mlx-swarm</a>
+</footer>
+
+<dialog id="token-dlg">
+  <h3 style="margin-top:0" data-i18n="auth.title">Access token</h3>
+  <p class="muted" style="font-size:13px" data-i18n="auth.body">Paste an API key (sk-swarm-…) to chat and run jobs, or the coordinator's admin token to manage the cluster. It is kept in this browser only.</p>
+  <input type="password" id="token-input" autocomplete="off">
+  <div class="row" style="justify-content:flex-end;margin-top:14px">
+    <button id="token-clear" data-i18n="auth.clear">Forget</button>
+    <button class="primary" id="token-save" data-i18n="auth.save">Save</button>
+  </div>
+</dialog>
+
+<dialog id="key-dlg">
+  <h3 style="margin-top:0" data-i18n="api.created">Key created</h3>
+  <p class="muted" style="font-size:13px" data-i18n="api.once">Copy it now: it is not shown again.</p>
+  <div class="secret mono" id="key-secret"></div>
+  <div class="row" style="justify-content:flex-end;margin-top:14px">
+    <button id="key-use" data-i18n="api.useHere">Use in this browser</button>
+    <button data-copy="#key-secret" data-i18n="copy">Copy</button>
+    <button class="primary" id="key-done" data-i18n="done">Done</button>
+  </div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+"use strict";
+// ---------------------------------------------------------------- i18n
+const STRINGS = {
+  en: {},
+  zh: {
+    "nav.overview": "总览", "nav.chat": "对话", "nav.jobs": "批量任务", "nav.api": "API",
+    "auth.token": "令牌", "auth.title": "访问令牌", "auth.clear": "清除", "auth.save": "保存",
+    "auth.body": "粘贴 API Key（sk-swarm-…）即可对话和提交任务；粘贴 Coordinator 的管理员令牌可管理集群。令牌只保存在本浏览器中。",
+    "who.admin": "管理员", "who.key": "API Key", "who.open": "访客", "who.locked": "需要令牌",
+    "ov.nodes": "健康节点", "ov.tps": "输出 tok/s（最近 1 分钟）", "ov.inflight": "进行中的请求", "ov.queued": "排队的批量任务",
+    "ov.requests": "启动以来的请求", "ov.tokens": "已生成 token", "ov.throughput": "吞吐量（最近 10 分钟）",
+    "ov.nodesTitle": "节点", "ov.recent": "最近请求", "ov.noNodes": "还没有节点注册。在每台 Mac 上运行 swarm agent 或 swarm service install agent。",
+    "ov.noRecent": "还没有请求。", "ov.adminOnly": "节点状态只对管理员可见：在 Coordinator 所在的 Mac 上打开本页，或输入管理员令牌。",
+    "node.healthy": "健康", "node.down": "离线", "node.draining": "排空中", "node.cooldown": "冷却中",
+    "node.model": "模型", "node.mode": "模式", "node.replica": "副本", "node.pipeline": "流水线",
+    "node.memFree": "空闲内存", "node.disk": "磁盘可用", "node.load": "负载", "node.inflight": "进行中",
+    "node.served": "已处理", "node.failures": "失败", "node.lastSeen": "心跳", "node.up": "在线时长",
+    "node.tps": "tok/s", "node.ttft": "首 token", "node.spec": "投机解码", "node.batch": "批量任务",
+    "node.drain": "排空", "node.undrain": "恢复", "node.remove": "移除", "node.removeConfirm": "从 Coordinator 中移除节点 {id}？如果它还在运行，下次心跳时会重新注册。",
+    "node.ago": "{s} 前",
+    "t.time": "时间", "t.node": "节点", "t.kind": "类型", "t.key": "Key", "t.in": "输入", "t.out": "输出",
+    "t.dur": "耗时", "t.ttft": "首 token", "t.tps": "tok/s", "t.status": "状态",
+    "chat.model": "模型", "chat.system": "系统提示词", "chat.temperature": "温度", "chat.topp": "Top-p",
+    "chat.maxTokens": "最大 token 数", "chat.thinking": "思考模式（Qwen3）", "chat.new": "新对话",
+    "chat.hint": "同一个对话固定在同一个节点上，以复用 prompt cache。", "chat.send": "发送", "chat.stop": "停止",
+    "chat.placeholder": "输入消息（Enter 发送，Shift+Enter 换行）", "chat.thinkingLabel": "思考过程",
+    "chat.empty": "选择一个模型，开始对话。", "chat.noModel": "当前没有可用的模型。",
+    "chat.cached": "缓存 {n}", "chat.stopped": "已停止",
+    "jobs.submit": "提交批量任务", "jobs.input": "Prompt：每行一条，或 OpenAI Batch JSONL", "jobs.submitBtn": "提交",
+    "jobs.hint": "各台 Mac 按自己的速度领取任务；每个任务的结果只保存一次。", "jobs.cli": "命令行",
+    "jobs.format": "输入每行是 {\"custom_id\", \"body\"}（OpenAI Batch 格式）或 {\"prompt\": \"...\"}；结果是 JSONL，每个任务一行。",
+    "jobs.title": "任务", "jobs.none": "还没有批量任务。", "jobs.id": "ID", "jobs.created": "创建时间", "jobs.progress": "进度",
+    "jobs.results": "结果", "jobs.cancel": "取消", "jobs.cancelConfirm": "取消任务 {id} 中尚未完成的部分？",
+    "jobs.submitted": "已提交 {n} 个任务", "jobs.emptyInput": "没有输入。", "jobs.done": "完成", "jobs.running": "进行中",
+    "jobs.failed": "失败", "jobs.status.completed": "已完成", "jobs.status.in_progress": "进行中", "jobs.queued": "排队", "jobs.cancelled": "已取消",
+    "api.endpoint": "接口地址", "api.compat": "兼容 OpenAI：/v1/chat/completions、/v1/completions、/v1/models、/v1/jobs，任何 OpenAI SDK 都能直接用。",
+    "api.newKey": "创建 API Key", "api.keyName": "名称（谁在用、做什么用）", "api.create": "创建",
+    "api.keyHint": "创建第一个 Key 之后，所有 /v1 请求都需要 Key。撤销所有 Key 后 API 重新开放。",
+    "api.keys": "API Key", "api.examples": "调用示例", "api.created": "Key 已创建", "api.once": "请立即复制：之后不会再显示。",
+    "api.useHere": "在本浏览器中使用", "api.open": "开放：当前没有 API Key，局域网内任何人都能调用。",
+    "api.locked": "受保护：调用 /v1 需要 API Key。", "api.adminOnly": "管理 Key 需要管理员权限：在 Coordinator 所在的 Mac 上打开本页，或输入 Coordinator 的管理员令牌。",
+    "api.name": "名称", "api.hint": "Key", "api.created_at": "创建时间", "api.lastUsed": "最近使用", "api.requests": "请求数",
+    "api.tokens": "token（输入 / 输出）", "api.state": "状态", "api.active": "有效", "api.revoked": "已撤销",
+    "api.revoke": "撤销", "api.revokeConfirm": "撤销 Key「{name}」？使用它的客户端会立即失去访问权限。", "api.none": "还没有 API Key，API 对局域网开放。",
+    "nav.docs": "文档", "footer.tag": "基于 MLX 的开源 Apple Silicon Mac 集群推理",
+    "ov.h": "集群总览", "ov.sub": "每台 Mac 的健康状态、内存和实时吞吐量。",
+    "chat.h": "对话试用", "chat.sub": "和集群中的任意模型对话，实时查看速度和路由信息。",
+    "jobs.h": "批量任务", "jobs.sub": "把成千上万条 prompt 分发到所有 Mac；每个结果只保存一次。",
+    "api.h": "API 接入", "api.sub": "OpenAI 兼容接口、API Key 与用量。",
+    "docs.h": "文档", "docs.sub": "搭建集群、添加 Mac、部署模型和日常运维。",
+    "docs.how": "工作原理", "docs.install": "安装", "docs.model": "获取模型", "docs.coord": "启动 Coordinator",
+    "docs.node": "添加一台 Mac", "docs.pipeline": "切分大模型", "docs.spec": "投机解码", "docs.use": "调用 API",
+    "docs.ops": "日常运维", "docs.security": "安全", "docs.trouble": "常见问题",
+    "copy": "复制", "copied": "已复制", "done": "完成", "never": "从未", "error": "出错",
+  },
+};
+let lang = (load("swarm.lang") || (navigator.language || "en")).startsWith("zh") ? "zh" : "en";
+function t(key, vars) {
+  let s = (STRINGS[lang] && STRINGS[lang][key]) || EN[key] || key;
+  if (vars) for (const [k, v] of Object.entries(vars)) s = s.replaceAll("{" + k + "}", v);
+  return s;
+}
+const EN = {
+  "who.admin": "Admin", "who.key": "API key", "who.open": "Guest", "who.locked": "Token needed",
+  "ov.noNodes": "No nodes yet. Run swarm agent (or swarm service install agent) on each Mac.",
+  "ov.noRecent": "No requests yet.", "ov.adminOnly": "Node status is for administrators: open this page on the coordinator's Mac, or enter the admin token.",
+  "node.healthy": "healthy", "node.down": "offline", "node.draining": "draining", "node.cooldown": "cooling down",
+  "node.model": "Model", "node.mode": "Mode", "node.replica": "replica", "node.pipeline": "pipeline",
+  "node.memFree": "Memory free", "node.disk": "Disk free", "node.load": "Load", "node.inflight": "In flight",
+  "node.served": "Served", "node.failures": "Failures", "node.lastSeen": "Heartbeat", "node.up": "Up",
+  "node.tps": "tok/s", "node.ttft": "TTFT", "node.spec": "speculative", "node.batch": "Batch tasks",
+  "node.drain": "Drain", "node.undrain": "Resume", "node.remove": "Remove",
+  "node.removeConfirm": "Remove node {id} from the coordinator? If it is still running it registers again on its next heartbeat.",
+  "node.ago": "{s} ago",
+  "t.time": "Time", "t.node": "Node", "t.kind": "Kind", "t.key": "Key", "t.in": "In", "t.out": "Out",
+  "t.dur": "Duration", "t.ttft": "TTFT", "t.tps": "tok/s", "t.status": "Status",
+  "chat.stop": "Stop", "chat.thinkingLabel": "Thinking", "chat.empty": "Pick a model and start chatting.",
+  "chat.noModel": "No model is being served right now.", "chat.cached": "cached {n}", "chat.stopped": "stopped",
+  "jobs.none": "No batch jobs yet.", "jobs.id": "ID", "jobs.created": "Created", "jobs.progress": "Progress",
+  "jobs.results": "Results", "jobs.cancel": "Cancel", "jobs.cancelConfirm": "Cancel the unfinished part of job {id}?",
+  "jobs.submitted": "Submitted {n} tasks", "jobs.emptyInput": "Nothing to submit.", "jobs.done": "done",
+  "jobs.running": "running", "jobs.status.completed": "completed", "jobs.status.in_progress": "in progress", "jobs.failed": "failed", "jobs.queued": "queued", "jobs.cancelled": "cancelled",
+  "api.open": "Open: there are no API keys, anyone on the network can call the API.",
+  "api.locked": "Protected: /v1 requests need an API key.",
+  "api.name": "Name", "api.hint": "Key", "api.created_at": "Created", "api.lastUsed": "Last used", "api.requests": "Requests",
+  "api.tokens": "Tokens (in / out)", "api.state": "Status", "api.active": "active", "api.revoked": "revoked",
+  "api.revoke": "Revoke", "api.revokeConfirm": "Revoke key \"{name}\"? Clients using it lose access immediately.",
+  "api.none": "No API keys: the API is open to the local network.",
+  "copied": "Copied", "never": "never", "error": "Error",
+};
+function applyI18n() {
+  document.documentElement.lang = lang === "zh" ? "zh-CN" : "en";
+  document.querySelectorAll("[data-i18n]").forEach(el => {
+    const k = el.dataset.i18n;
+    if (!el.dataset.en) el.dataset.en = el.textContent;
+    el.textContent = lang === "en" ? el.dataset.en : t(k);
+  });
+  document.querySelectorAll("[data-i18n-ph]").forEach(el => {
+    if (!el.dataset.enPh) el.dataset.enPh = el.placeholder;
+    el.placeholder = lang === "en" ? el.dataset.enPh : t(el.dataset.i18nPh);
+  });
+  $("#lang-btn").textContent = lang === "zh" ? "English" : "中文";
+}
+
+// ---------------------------------------------------------------- utils
+function $(s, root = document) { return root.querySelector(s); }
+function load(k) { try { return localStorage.getItem(k); } catch { return null; } }
+function save(k, v) { try { v == null ? localStorage.removeItem(k) : localStorage.setItem(k, v); } catch {} }
+function esc(s) {
+  return String(s ?? "").replace(/[&<>"']/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function fmt(n, d = 0) { return n == null ? "–" : Number(n).toLocaleString(undefined, { maximumFractionDigits: d, minimumFractionDigits: d }); }
+function compact(n) {
+  if (n == null) return "–";
+  if (n >= 1e6) return (n / 1e6).toFixed(1) + "M";
+  if (n >= 1e4) return (n / 1e3).toFixed(1) + "k";
+  return fmt(n);
+}
+function dur(s) {
+  if (s == null) return "–";
+  if (s < 1) return Math.round(s * 1000) + " ms";
+  if (s < 60) return s.toFixed(1) + " s";
+  if (s < 3600) return Math.floor(s / 60) + "m " + Math.floor(s % 60) + "s";
+  if (s < 86400) return Math.floor(s / 3600) + "h " + Math.floor((s % 3600) / 60) + "m";
+  return Math.floor(s / 86400) + "d " + Math.floor((s % 86400) / 3600) + "h";
+}
+function clock(ts) { return ts ? new Date(ts * 1000).toLocaleTimeString([], { hour12: false }) : "–"; }
+function datetime(ts) { return ts ? new Date(ts * 1000).toLocaleString([], { hour12: false }) : t("never"); }
+function toast(msg) {
+  const el = $("#toast"); el.textContent = msg; el.classList.add("show");
+  clearTimeout(toast.timer); toast.timer = setTimeout(() => el.classList.remove("show"), 2200);
+}
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); }
+  catch {
+    const ta = document.createElement("textarea"); ta.value = text; document.body.appendChild(ta);
+    ta.select(); document.execCommand("copy"); ta.remove();
+  }
+  toast(t("copied"));
+}
+const PALETTE = ["#e8590c", "#1c7ed6", "#2f9e44", "#ae3ec9", "#f59f00", "#0c8599", "#e64980", "#5c7cfa"];
+const colorOf = (() => { const m = {}; return id => m[id] ||= PALETTE[Object.keys(m).length % PALETTE.length]; })();
+
+// ---------------------------------------------------------------- api
+let token = load("swarm.token");
+async function api(method, path, body, opts = {}) {
+  const headers = { ...(opts.headers || {}) };
+  if (token) headers.authorization = "Bearer " + token;
+  if (body !== undefined) headers["content-type"] = "application/json";
+  const r = await fetch(path, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), signal: opts.signal });
+  if (opts.raw) return r;
+  const text = await r.text();
+  let data; try { data = text ? JSON.parse(text) : {}; } catch { data = { text }; }
+  if (!r.ok) {
+    const err = new Error((data.error && data.error.message) || ("HTTP " + r.status));
+    err.status = r.status; throw err;
+  }
+  return data;
+}
+let session = { admin: false, keys_required: false, key: false };
+async function refreshSession() {
+  try { session = await api("GET", "/admin/session"); } catch {}
+  const who = $("#who");
+  if (session.admin) { who.className = "badge ok"; who.innerHTML = '<span class="led"></span>' + t("who.admin"); }
+  else if (session.key) { who.className = "badge accent"; who.textContent = t("who.key"); }
+  else if (session.keys_required) { who.className = "badge warn"; who.textContent = t("who.locked"); }
+  else { who.className = "badge"; who.textContent = t("who.open"); }
+}
+
+// ---------------------------------------------------------------- routing
+const pages = ["overview", "chat", "jobs", "api", "docs"];
+function route() {
+  const page = pages.includes(location.hash.slice(1)) ? location.hash.slice(1) : "overview";
+  document.querySelectorAll(".page").forEach(p => p.classList.toggle("active", p.id === "page-" + page));
+  document.querySelectorAll("nav a").forEach(a => a.classList.toggle("active", a.getAttribute("href") === "#" + page));
+  current = page;
+  document.body.classList.toggle("chat-page", page === "chat");
+  if (pendingJump) { const id = pendingJump; pendingJump = null; jumpDoc(id); }
+  tick();
+}
+let current = "overview", pendingJump = null;
+let docSection = "how";
+window.addEventListener("scroll", () => {
+  if (current !== "docs") return;
+  let on = null;
+  document.querySelectorAll(`[data-lang="${lang}"] h3[id]`).forEach(h => {
+    if (h.getBoundingClientRect().top < 120) on = h.id.split("-").pop();
+  });
+  if (on && on !== docSection) {
+    docSection = on;
+    document.querySelectorAll("#toc button").forEach(b => b.classList.toggle("on", b.dataset.doc === on));
+  }
+}, { passive: true });
+function jumpDoc(id) {
+  docSection = id;
+  const el = document.getElementById(`doc-${lang}-${id}`);
+  if (el) el.scrollIntoView({ behavior: "smooth", block: "start" });
+  document.querySelectorAll("#toc button").forEach(b => b.classList.toggle("on", b.dataset.doc === id));
+}
+document.querySelectorAll(".doc pre").forEach(pre => {
+  const b = document.createElement("button");
+  b.className = "small copy"; b.dataset.i18n = "copy"; b.textContent = "Copy";
+  b.addEventListener("click", ev => { ev.stopPropagation(); copyText(pre.querySelector("code").textContent); });
+  pre.appendChild(b);
+});
+
+// ---------------------------------------------------------------- overview
+let lastOverview = null;
+async function refreshOverview() {
+  let data;
+  try { data = await api("GET", "/admin/overview"); }
+  catch (e) {
+    if (e.status === 403) {
+      $("#nodes").innerHTML = `<div class="panel empty">${esc(t("ov.adminOnly"))}</div>`;
+      $("#recent").innerHTML = ""; drawChart(null);
+    }
+    return;
+  }
+  lastOverview = data;
+  const nodes = data.nodes, m = data.metrics;
+  const healthy = nodes.filter(n => n.healthy).length;
+  $("#s-nodes").textContent = `${healthy} / ${nodes.length}`;
+  const tps = Object.values(m.nodes).reduce((a, n) => a + (n.tok_s || 0), 0);
+  $("#s-tps").textContent = fmt(tps, 1);
+  $("#s-inflight").textContent = fmt(nodes.reduce((a, n) => a + n.inflight, 0));
+  $("#s-queued").textContent = fmt(Object.values(data.backlog).reduce((a, n) => a + n, 0));
+  $("#s-requests").textContent = compact(m.totals.requests);
+  $("#s-tokens").textContent = compact(m.totals.completion_tokens);
+  renderNodes(nodes, m);
+  renderRecent(m.recent);
+  drawChart(m);
+  setModels(data.models);
+}
+function nodeState(n) {
+  if (n.draining) return ["warn", t("node.draining")];
+  if (n.healthy) return ["ok", t("node.healthy")];
+  if (n.last_seen_s < 15) return ["warn", t("node.cooldown")];
+  return ["bad", t("node.down")];
+}
+function renderNodes(nodes, m) {
+  const box = $("#nodes");
+  if (!nodes.length) { box.innerHTML = `<div class="panel empty">${esc(t("ov.noNodes"))}</div>`; return; }
+  nodes.sort((a, b) => (b.healthy - a.healthy) || a.node_id.localeCompare(b.node_id));
+  box.innerHTML = nodes.map(n => {
+    const [cls, label] = nodeState(n);
+    const info = n.info || {}, st = n.stats || {}, nm = m.nodes[n.node_id] || {};
+    const mem = n.memory_free_pct;
+    const memColor = mem == null ? "var(--muted)" : mem < 15 ? "var(--bad)" : mem < 30 ? "var(--warn)" : "var(--ok)";
+    const pipe = info.pipeline;
+    const mode = pipe ? `${t("node.pipeline")} · ${esc(pipe.hosts.join(" + "))} · ${esc(pipe.split)}` : t("node.replica");
+    const spec = info.draft_model ? `<span class="badge accent">${esc(t("node.spec"))}: ${esc(info.draft_model)} k=${esc(info.num_draft_tokens)}</span>` : "";
+    return `<div class="panel pad node ${n.healthy ? "" : "down"}">
+      <div class="top">
+        <div style="flex:1;min-width:0">
+          <div class="name"><span style="color:${colorOf(n.node_id)}">●</span> ${esc(n.node_id)}</div>
+          <div class="sub">${esc(info.chip || "")}${info.mem_total_gb ? " · " + esc(info.mem_total_gb) + " GB" : ""}</div>
+          <div class="sub mono">${esc(n.url)}</div>
+        </div>
+        <span class="badge ${cls}"><span class="led"></span>${esc(label)}</span>
+      </div>
+      <div class="row" style="margin-top:8px;gap:6px"><span class="badge">${esc(n.model)}</span>${spec}</div>
+      <dl class="kv">
+        <dt>${esc(t("node.mode"))}</dt><dd>${mode}</dd>
+        <dt>${esc(t("node.memFree"))}</dt><dd>${mem == null ? "–" : fmt(mem) + "%"}<div class="bar"><span style="width:${mem ?? 0}%;background:${memColor}"></span></div></dd>
+        <dt>${esc(t("node.disk"))}</dt><dd>${st.disk_free_gb == null ? "–" : fmt(st.disk_free_gb) + " GB"}</dd>
+        <dt>${esc(t("node.tps"))}</dt><dd>${fmt(nm.tok_s || 0, 1)}${nm.ttft_p50_s != null ? ` · ${esc(t("node.ttft"))} ${dur(nm.ttft_p50_s)}` : ""}</dd>
+        <dt>${esc(t("node.inflight"))}</dt><dd>${fmt(n.inflight)} · ${esc(t("node.batch"))} ${fmt(st.batch_tasks ?? 0)}/${fmt(info.job_slots ?? 0)}</dd>
+        <dt>${esc(t("node.served"))}</dt><dd>${fmt(n.served)} · ${esc(t("node.failures"))} ${fmt(n.failures)}${st.worker_restarts ? " · restarts " + fmt(st.worker_restarts) : ""}</dd>
+        <dt>${esc(t("node.load"))}</dt><dd>${st.load1 ?? "–"}</dd>
+        <dt>${esc(t("node.lastSeen"))}</dt><dd>${esc(t("node.ago", { s: dur(n.last_seen_s) }))} · ${esc(t("node.up"))} ${dur(n.up_s)}</dd>
+      </dl>
+      <div class="actions">
+        <button class="small" data-drain="${esc(n.node_id)}" data-on="${n.draining ? 0 : 1}">${esc(t(n.draining ? "node.undrain" : "node.drain"))}</button>
+        <button class="small danger" data-remove="${esc(n.node_id)}">${esc(t("node.remove"))}</button>
+      </div>
+    </div>`;
+  }).join("");
+}
+function renderRecent(rows) {
+  const tb = $("#recent");
+  if (!rows.length) { tb.innerHTML = `<tr><td class="empty">${esc(t("ov.noRecent"))}</td></tr>`; return; }
+  tb.innerHTML = `<tr><th>${t("t.time")}</th><th>${t("t.node")}</th><th>${t("t.kind")}</th><th>${t("t.key")}</th>
+    <th class="num">${t("t.in")}</th><th class="num">${t("t.out")}</th><th class="num">${t("t.dur")}</th>
+    <th class="num">${t("t.ttft")}</th><th class="num">${t("t.tps")}</th><th>${t("t.status")}</th></tr>` +
+    rows.map(e => {
+      const gen = e.ttft_s != null ? e.seconds - e.ttft_s : e.seconds;
+      const tps = e.completion_tokens && gen > 0 ? e.completion_tokens / gen : null;
+      return `<tr><td>${clock(e.end)}</td><td><span style="color:${colorOf(e.node_id)}">●</span> ${esc(e.node_id)}</td>
+        <td>${esc(e.kind)}</td><td class="mono">${esc(e.key || "–")}</td>
+        <td class="num">${fmt(e.prompt_tokens)}</td><td class="num">${fmt(e.completion_tokens)}</td>
+        <td class="num">${dur(e.seconds)}</td><td class="num">${dur(e.ttft_s)}</td><td class="num">${tps ? fmt(tps, 1) : "–"}</td>
+        <td>${e.ok ? '<span class="badge ok">ok</span>' : '<span class="badge bad">' + esc(t("error")) + "</span>"}</td></tr>`;
+    }).join("");
+}
+function drawChart(m) {
+  const canvas = $("#chart"), dpr = window.devicePixelRatio || 1;
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  if (!w) return;
+  canvas.width = w * dpr; canvas.height = h * dpr;
+  const g = canvas.getContext("2d"); g.scale(dpr, dpr); g.clearRect(0, 0, w, h);
+  const css = getComputedStyle(document.documentElement);
+  const muted = css.getPropertyValue("--muted").trim(), border = css.getPropertyValue("--border").trim();
+  const ids = m ? Object.keys(m.series).sort() : [];
+  const n = ids.length ? m.series[ids[0]].length : 120;
+  const totals = Array.from({ length: n }, (_, i) => ids.reduce((a, id) => a + m.series[id][i], 0));
+  const peak = Math.max(10, ...totals);
+  const step = Math.pow(10, Math.floor(Math.log10(peak)));
+  const top = Math.ceil(peak / step) * step;
+  const L = 40, R = 8, T = 8, B = 20, pw = w - L - R, ph = h - T - B;
+  g.font = "11px -apple-system, sans-serif"; g.fillStyle = muted; g.strokeStyle = border; g.lineWidth = 1;
+  for (let i = 0; i <= 4; i++) {
+    const y = T + ph - (ph * i) / 4;
+    g.beginPath(); g.moveTo(L, y + .5); g.lineTo(L + pw, y + .5); g.stroke();
+    g.textAlign = "right"; g.fillText(fmt((top * i) / 4, top < 20 ? 1 : 0), L - 6, y + 4);
+  }
+  g.textAlign = "center";
+  [["-10m", 0], ["-5m", .5], ["now", 1]].forEach(([s, f]) => g.fillText(s, L + pw * f, h - 5));
+  const x = i => L + (pw * i) / Math.max(n - 1, 1);
+  const y = v => T + ph - (ph * v) / top;
+  const base = new Array(n).fill(0);
+  for (const id of ids) {
+    const s = m.series[id], next = base.map((b, i) => b + s[i]);
+    g.beginPath(); g.moveTo(x(0), y(next[0]));
+    for (let i = 1; i < n; i++) g.lineTo(x(i), y(next[i]));
+    for (let i = n - 1; i >= 0; i--) g.lineTo(x(i), y(base[i]));
+    g.closePath(); g.fillStyle = colorOf(id) + "55"; g.fill();
+    g.beginPath(); g.moveTo(x(0), y(next[0]));
+    for (let i = 1; i < n; i++) g.lineTo(x(i), y(next[i]));
+    g.strokeStyle = colorOf(id); g.lineWidth = 1.5; g.stroke();
+    next.forEach((v, i) => base[i] = v);
+  }
+  $("#legend").innerHTML = ids.map(id => `<span><i style="background:${colorOf(id)}"></i>${esc(id)}</span>`).join("") ||
+    `<span>${esc(t("ov.noRecent"))}</span>`;
+}
+
+// ---------------------------------------------------------------- models
+let models = [];
+async function refreshModels() {
+  try { setModels((await api("GET", "/v1/models")).data.map(m => m.id)); } catch {}
+}
+function setModels(list) {
+  if (JSON.stringify(list) === JSON.stringify(models)) return;
+  models = list;
+  for (const sel of [$("#c-model"), $("#j-model")]) {
+    const keep = sel.value || load("swarm.model");
+    sel.innerHTML = list.map(m => `<option>${esc(m)}</option>`).join("");
+    if (list.includes(keep)) sel.value = keep;
+  }
+  updateExamples();
+  if (!chatLog.length) renderMessages();
+}
+
+// ---------------------------------------------------------------- chat
+let chatLog = [], chatSession = newSessionId(), controller = null;
+function newSessionId() { return "ui-" + Math.random().toString(36).slice(2, 10); }
+function renderMarkdown(src) {
+  const blocks = [];
+  let text = esc(src).replace(/```([\w+-]*)\n?([\s\S]*?)(```|$)/g, (_, lang, code) => {
+    blocks.push(`<pre><code>${code.replace(/\n$/, "")}</code></pre>`);
+    return `\u0000${blocks.length - 1}\u0000`;
+  });
+  const inline = s => s
+    .replace(/`([^`\n]+)`/g, "<code>$1</code>")
+    .replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>")
+    .replace(/(^|[^*])\*([^*\n]+)\*/g, "$1<em>$2</em>");
+  const out = [];
+  for (const para of text.split(/\n{2,}/)) {
+    const lines = para.split("\n");
+    if (/^\u0000\d+\u0000$/.test(para.trim())) { out.push(para.trim()); continue; }
+    if (lines.every(l => /^\s*[-*] /.test(l))) {
+      out.push("<ul>" + lines.map(l => "<li>" + inline(l.replace(/^\s*[-*] /, "")) + "</li>").join("") + "</ul>");
+    } else if (lines.every(l => /^\s*\d+[.)] /.test(l))) {
+      out.push("<ol>" + lines.map(l => "<li>" + inline(l.replace(/^\s*\d+[.)] /, "")) + "</li>").join("") + "</ol>");
+    } else if (/^#{1,6} /.test(para)) {
+      const [first, ...rest] = lines;
+      out.push(`<h3>${inline(first.replace(/^#+ /, ""))}</h3>` + (rest.length ? `<p>${inline(rest.join("<br>"))}</p>` : ""));
+    } else {
+      out.push("<p>" + inline(lines.join("<br>")) + "</p>");
+    }
+  }
+  return out.join("").replace(/\u0000(\d+)\u0000/g, (_, i) => blocks[+i]);
+}
+function renderMessages() {
+  const box = $("#messages");
+  if (!chatLog.length) {
+    box.innerHTML = `<div class="empty">${esc(models.length ? t("chat.empty") : t("chat.noModel"))}</div>`;
+    return;
+  }
+  box.innerHTML = chatLog.map((m, i) => {
+    if (m.role === "user") return `<div class="msg user">${esc(m.content)}</div>`;
+    const think = m.reasoning ? `<details class="think" ${m.streaming && !m.content ? "open" : ""}><summary>${esc(t("chat.thinkingLabel"))}</summary><div>${esc(m.reasoning)}</div></details>` : "";
+    const meta = [];
+    if (m.node) meta.push(`<span><span style="color:${colorOf(m.node)}">●</span> ${esc(m.node)}</span>`);
+    if (m.ttft != null) meta.push(`<span>${esc(t("node.ttft"))} ${dur(m.ttft)}</span>`);
+    if (m.tps) meta.push(`<span>${fmt(m.tps, 1)} tok/s</span>`);
+    if (m.usage) {
+      meta.push(`<span>${fmt(m.usage.prompt_tokens)} → ${fmt(m.usage.completion_tokens)} tok</span>`);
+      const cached = m.usage.prompt_tokens_details && m.usage.prompt_tokens_details.cached_tokens;
+      if (cached) meta.push(`<span>${esc(t("chat.cached", { n: fmt(cached) }))}</span>`);
+    }
+    if (m.stopped) meta.push(`<span>${esc(t("chat.stopped"))}</span>`);
+    const err = m.error ? `<div class="error">${esc(m.error)}</div>` : "";
+    return `<div class="msg assistant">${think}<div class="body ${m.streaming ? "caret" : ""}">${renderMarkdown(m.content)}</div>${err}<div class="meta">${meta.join("")}</div></div>`;
+  }).join("");
+  box.scrollTop = box.scrollHeight;
+}
+async function send() {
+  if (controller) { controller.abort(); return; }
+  const input = $("#c-input"), text = input.value.trim(), model = $("#c-model").value;
+  if (!text || !model) return;
+  save("swarm.model", model);
+  input.value = ""; autosize();
+  chatLog.push({ role: "user", content: text });
+  const reply = { role: "assistant", content: "", reasoning: "", streaming: true };
+  chatLog.push(reply); renderMessages();
+  const messages = [];
+  const system = $("#c-system").value.trim();
+  if (system) messages.push({ role: "system", content: system });
+  for (const m of chatLog.slice(0, -1)) if (!m.error) messages.push({ role: m.role, content: m.content });
+  const body = {
+    model, messages, stream: true, stream_options: { include_usage: true },
+    temperature: +$("#c-temp").value, top_p: +$("#c-topp").value, max_tokens: +$("#c-max").value || 1024,
+    chat_template_kwargs: { enable_thinking: $("#c-think").checked },
+  };
+  controller = new AbortController();
+  $("#c-send").textContent = t("chat.stop");
+  const started = performance.now();
+  let first = null, pending = false;
+  const repaint = () => { if (!pending) { pending = true; requestAnimationFrame(() => { pending = false; renderMessages(); }); } };
+  try {
+    const r = await api("POST", "/v1/chat/completions", body, { raw: true, signal: controller.signal, headers: { "x-session-id": chatSession } });
+    if (!r.ok) {
+      let msg = "HTTP " + r.status;
+      try { msg = (await r.json()).error.message; } catch {}
+      if (r.status === 401) $("#token-dlg").showModal();
+      throw new Error(msg);
+    }
+    reply.node = r.headers.get("x-swarm-node");
+    const reader = r.body.getReader(), dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      let nl;
+      while ((nl = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, nl).trim(); buf = buf.slice(nl + 1);
+        if (!line.startsWith("data: ") || line === "data: [DONE]") continue;
+        let chunk; try { chunk = JSON.parse(line.slice(6)); } catch { continue; }
+        if (chunk.usage) reply.usage = chunk.usage;
+        const delta = (chunk.choices && chunk.choices[0] && chunk.choices[0].delta) || {};
+        const piece = delta.content || "", thought = delta.reasoning || delta.reasoning_content || "";
+        if ((piece || thought) && first == null) { first = performance.now(); reply.ttft = (first - started) / 1000; }
+        reply.content += piece; reply.reasoning += thought;
+        repaint();
+      }
+    }
+  } catch (e) {
+    if (e.name === "AbortError") reply.stopped = true;
+    else reply.error = e.message;
+  } finally {
+    controller = null;
+    reply.streaming = false;
+    const n = reply.usage ? reply.usage.completion_tokens : null;
+    if (n && first != null) reply.tps = n / Math.max((performance.now() - first) / 1000, 1e-3);
+    $("#c-send").textContent = t("chat.send");
+    renderMessages();
+  }
+}
+function autosize() { const el = $("#c-input"); el.style.height = "auto"; el.style.height = Math.min(el.scrollHeight, 200) + "px"; }
+
+// ---------------------------------------------------------------- jobs
+async function refreshJobs() {
+  let data;
+  try { data = await api("GET", "/v1/jobs?limit=30"); }
+  catch (e) { $("#jobs").innerHTML = `<tr><td class="empty">${esc(e.message)}</td></tr>`; return; }
+  const tb = $("#jobs");
+  if (!data.data.length) { tb.innerHTML = `<tr><td class="empty">${esc(t("jobs.none"))}</td></tr>`; return; }
+  tb.innerHTML = `<tr><th>${t("jobs.id")}</th><th>${t("jobs.created")}</th><th>${t("t.status")}</th><th>${t("jobs.progress")}</th>
+    <th class="num">${t("jobs.done")}</th><th class="num">${t("jobs.running")}</th><th class="num">${t("jobs.queued")}</th>
+    <th class="num">${t("jobs.failed")}</th><th></th></tr>` + data.data.map(j => {
+    const c = j.request_counts, total = Math.max(c.total, 1);
+    const seg = (n, color) => n ? `<span style="width:${(100 * n) / total}%;background:${color}"></span>` : "";
+    const label = j.metadata && (j.metadata.file || j.metadata.source);
+    const meta = label ? ` <span class="muted" title="${esc(label)}">${esc(String(label).split("/").pop())}</span>` : "";
+    const active = j.status !== "completed";
+    return `<tr><td class="mono">${esc(j.id)}${meta}</td><td>${datetime(j.created_at)}</td>
+      <td><span class="badge ${active ? "accent" : "ok"}">${esc(t("jobs.status." + j.status))}</span></td>
+      <td><div class="progress">${seg(c.completed, "var(--ok)")}${seg(c.failed, "var(--bad)")}${seg(c.cancelled, "var(--muted)")}${seg(c.running, "var(--info)")}</div>
+        <span class="muted" style="font-size:12px">${c.completed + c.failed + c.cancelled} / ${c.total}</span></td>
+      <td class="num">${fmt(c.completed)}</td><td class="num">${fmt(c.running)}</td><td class="num">${fmt(c.queued)}</td><td class="num">${fmt(c.failed)}</td>
+      <td><button class="small" data-results="${esc(j.id)}">${esc(t("jobs.results"))}</button>
+        ${active ? `<button class="small danger" data-cancel="${esc(j.id)}">${esc(t("jobs.cancel"))}</button>` : ""}</td></tr>`;
+  }).join("");
+}
+function parseTasks(text, maxTokens) {
+  const tasks = [];
+  text.split("\n").forEach((line, i) => {
+    const s = line.trim();
+    if (!s) return;
+    let row = null;
+    if (s.startsWith("{")) { try { row = JSON.parse(s); } catch { throw new Error(`line ${i + 1}: invalid JSON`); } }
+    else row = { prompt: s };
+    if (!row.body) {
+      if (row.prompt == null) throw new Error(`line ${i + 1}: need either body or prompt`);
+      const { custom_id, prompt, ...rest } = row;
+      row = { custom_id, body: { messages: [{ role: "user", content: prompt }], ...rest } };
+    }
+    if (row.body.max_tokens == null && maxTokens) row.body.max_tokens = maxTokens;
+    tasks.push(row);
+  });
+  return tasks;
+}
+async function submitJob() {
+  let tasks;
+  try { tasks = parseTasks($("#j-input").value, +$("#j-max").value); }
+  catch (e) { toast(e.message); return; }
+  if (!tasks.length) { toast(t("jobs.emptyInput")); return; }
+  const btn = $("#j-submit"); btn.disabled = true;
+  try {
+    await api("POST", "/v1/jobs", { tasks, model: $("#j-model").value || undefined, metadata: { source: "dashboard" } });
+    toast(t("jobs.submitted", { n: tasks.length }));
+    $("#j-input").value = "";
+    refreshJobs();
+  } catch (e) { toast(e.message); }
+  finally { btn.disabled = false; }
+}
+async function downloadResults(id) {
+  try {
+    const r = await api("GET", `/v1/jobs/${encodeURIComponent(id)}/results`, undefined, { raw: true });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const blob = new Blob([await r.text()], { type: "application/jsonl" });
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = `${id}-results.jsonl`; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------- api keys
+async function refreshKeys() {
+  const note = $("#api-admin-note");
+  let data;
+  try { data = await api("GET", "/admin/keys"); note.style.display = "none"; }
+  catch (e) {
+    if (e.status === 403) note.style.display = "";
+    $("#keys").innerHTML = ""; $("#k-create").disabled = true;
+    renderAccess(session.keys_required); return;
+  }
+  $("#k-create").disabled = false;
+  renderAccess(data.required);
+  const tb = $("#keys");
+  if (!data.data.length) { tb.innerHTML = `<tr><td class="empty">${esc(t("api.none"))}</td></tr>`; return; }
+  tb.innerHTML = `<tr><th>${t("api.name")}</th><th>${t("api.hint")}</th><th>${t("api.created_at")}</th><th>${t("api.lastUsed")}</th>
+    <th class="num">${t("api.requests")}</th><th class="num">${t("api.tokens")}</th><th>${t("api.state")}</th><th></th></tr>` +
+    data.data.map(k => `<tr><td>${esc(k.name)}</td><td class="mono">${esc(k.hint)}</td><td>${datetime(k.created_at)}</td>
+      <td>${datetime(k.last_used_at)}</td><td class="num">${fmt(k.requests)}</td>
+      <td class="num">${compact(k.prompt_tokens)} / ${compact(k.completion_tokens)}</td>
+      <td><span class="badge ${k.active ? "ok" : ""}">${esc(t(k.active ? "api.active" : "api.revoked"))}</span></td>
+      <td>${k.active ? `<button class="small danger" data-revoke="${esc(k.id)}" data-name="${esc(k.name)}">${esc(t("api.revoke"))}</button>` : ""}</td></tr>`).join("");
+}
+function renderAccess(required) {
+  $("#api-access").innerHTML = required
+    ? `<span class="badge ok"><span class="led"></span>${esc(t("api.locked"))}</span>`
+    : `<span class="badge warn"><span class="led"></span>${esc(t("api.open"))}</span>`;
+}
+let exampleKind = "curl";
+function updateExamples() {
+  const base = location.origin + "/v1", model = $("#c-model").value || models[0] || "MODEL";
+  const key = session.keys_required ? "sk-swarm-..." : "none";
+  $("#api-base").textContent = base;
+  document.querySelectorAll(".jm").forEach(el => el.textContent = model);
+  const ex = {
+    curl: `curl ${base}/chat/completions \\
+  -H "Authorization: Bearer ${key}" \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "${model}", "messages": [{"role": "user", "content": "Hello"}], "stream": true}'`,
+    python: `from openai import OpenAI
+
+client = OpenAI(base_url="${base}", api_key="${key}")
+stream = client.chat.completions.create(
+    model="${model}",
+    messages=[{"role": "user", "content": "Hello"}],
+    stream=True,
+)
+for chunk in stream:
+    print(chunk.choices[0].delta.content or "", end="", flush=True)`,
+    node: `import OpenAI from "openai";
+
+const client = new OpenAI({ baseURL: "${base}", apiKey: "${key}" });
+const stream = await client.chat.completions.create({
+  model: "${model}",
+  messages: [{ role: "user", content: "Hello" }],
+  stream: true,
+});
+for await (const chunk of stream) process.stdout.write(chunk.choices[0]?.delta?.content ?? "");`,
+  };
+  $("#example").textContent = ex[exampleKind];
+}
+async function createKey() {
+  try {
+    const k = await api("POST", "/admin/keys", { name: $("#k-name").value });
+    $("#k-name").value = "";
+    $("#key-secret").textContent = k.key;
+    $("#key-dlg").showModal();
+    refreshKeys(); refreshSession().then(updateExamples);
+  } catch (e) { toast(e.message); }
+}
+
+// ---------------------------------------------------------------- wiring
+document.addEventListener("click", async ev => {
+  const el = ev.target.closest("button");
+  const jump = ev.target.closest("a[data-jump]");
+  if (jump) {
+    if (current === "docs") { ev.preventDefault(); jumpDoc(jump.dataset.jump); }
+    else pendingJump = jump.dataset.jump;
+    return;
+  }
+  if (!el) return;
+  const d = el.dataset;
+  if (d.doc) { jumpDoc(d.doc); return; }
+  if (d.copy) copyText($(d.copy).textContent);
+  else if (d.drain) {
+    try { await api("POST", `/admin/nodes/${encodeURIComponent(d.drain)}/drain`, { draining: d.on === "1" }); refreshOverview(); }
+    catch (e) { toast(e.message); }
+  } else if (d.remove) {
+    if (!confirm(t("node.removeConfirm", { id: d.remove }))) return;
+    try { await api("DELETE", `/admin/nodes/${encodeURIComponent(d.remove)}`); refreshOverview(); }
+    catch (e) { toast(e.message); }
+  } else if (d.results) downloadResults(d.results);
+  else if (d.cancel) {
+    if (!confirm(t("jobs.cancelConfirm", { id: d.cancel }))) return;
+    try { await api("POST", `/v1/jobs/${encodeURIComponent(d.cancel)}/cancel`); refreshJobs(); }
+    catch (e) { toast(e.message); }
+  } else if (d.revoke) {
+    if (!confirm(t("api.revokeConfirm", { name: d.name }))) return;
+    try { await api("DELETE", `/admin/keys/${encodeURIComponent(d.revoke)}`); refreshKeys(); refreshSession().then(updateExamples); }
+    catch (e) { toast(e.message); }
+  } else if (d.ex) {
+    exampleKind = d.ex;
+    document.querySelectorAll("#ex-tabs button").forEach(b => b.classList.toggle("on", b === el));
+    updateExamples();
+  }
+});
+$("#c-send").onclick = send;
+$("#c-input").addEventListener("keydown", e => {
+  if (e.key === "Enter" && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(); }
+});
+$("#c-input").addEventListener("input", autosize);
+$("#c-new").onclick = () => { if (controller) controller.abort(); chatLog = []; chatSession = newSessionId(); renderMessages(); };
+for (const [id, out] of [["#c-temp", "#c-temp-v"], ["#c-topp", "#c-topp-v"]]) {
+  const sync = () => $(out).textContent = (+$(id).value).toFixed(2);
+  $(id).addEventListener("input", sync); sync();
+}
+$("#c-model").addEventListener("change", () => { save("swarm.model", $("#c-model").value); updateExamples(); });
+$("#j-submit").onclick = submitJob;
+$("#j-file").addEventListener("change", async e => {
+  const f = e.target.files[0]; if (f) $("#j-input").value = await f.text();
+});
+$("#k-create").onclick = createKey;
+$("#k-name").addEventListener("keydown", e => { if (e.key === "Enter") createKey(); });
+$("#token-btn").onclick = () => { $("#token-input").value = token || ""; $("#token-dlg").showModal(); };
+$("#token-save").onclick = async () => {
+  token = $("#token-input").value.trim() || null; save("swarm.token", token);
+  $("#token-dlg").close(); await refreshSession(); tick();
+};
+$("#token-clear").onclick = async () => { token = null; save("swarm.token", null); $("#token-dlg").close(); await refreshSession(); tick(); };
+$("#key-done").onclick = () => $("#key-dlg").close();
+$("#key-use").onclick = async () => {
+  token = $("#key-secret").textContent; save("swarm.token", token);
+  $("#key-dlg").close(); await refreshSession(); toast(t("who.key"));
+};
+$("#lang-btn").onclick = () => {
+  lang = lang === "zh" ? "en" : "zh"; save("swarm.lang", lang); applyI18n();
+  refreshSession(); $("#c-send").textContent = t(controller ? "chat.stop" : "chat.send");
+  renderMessages(); tick();
+  if (current === "docs") jumpDoc(docSection);
+};
+window.addEventListener("hashchange", route);
+window.addEventListener("resize", () => lastOverview && drawChart(lastOverview.metrics));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => lastOverview && drawChart(lastOverview.metrics));
+
+function tick() {
+  if (document.hidden) return;
+  if (current === "overview") refreshOverview();
+  else if (current === "jobs") { refreshJobs(); refreshModels(); }
+  else if (current === "api") { refreshKeys(); updateExamples(); }
+  else if (current === "chat") refreshModels();
+}
+setInterval(() => { if (current === "overview" || current === "jobs") tick(); }, 2500);
+document.addEventListener("visibilitychange", tick);
+
+applyI18n();
+renderMessages();
+refreshSession().then(() => { refreshModels(); route(); });
+</script>
+</body>
+</html>
