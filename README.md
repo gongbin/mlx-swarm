@@ -11,6 +11,7 @@ OpenAI-compatible API.
 - **One API for many Macs**: any OpenAI SDK works against the cluster. Requests go to the least-loaded Mac, conversations stay on the same machine to reuse its prompt cache, and requests move to another Mac when one fails.
 - **Batch jobs that finish exactly once**: submit thousands of prompts as a JSONL file. Every Mac pulls work at its own pace. Leases, fencing tokens and retries make sure each task's result is saved exactly once, even when a Mac crashes or sleeps mid-task.
 - **Models bigger than one Mac**: pipeline parallelism splits a model by layers across Macs over Thunderbolt or Ethernet, with output identical to a single Mac. A planner picks the split for Macs of different sizes and speeds and predicts the speed before anything is loaded. The group is served through the same API.
+- **Fast single streams, full throughput under load**: with a small draft model a worker uses speculative decoding while a request runs alone (about 2x faster), and switches to batching the moment other requests arrive. A running request is handed over to the batch mid-stream without a pause.
 - **Zero configuration**: the coordinator announces itself over Bonjour (mDNS). Nodes find it on their own, pick the fastest link, and run as login services that restart after a crash.
 - **Safe on shared Macs**: memory and disk checks run before every model load, and memory use is capped below what macOS needs. Nodes stay awake only while they are serving.
 
@@ -34,7 +35,7 @@ uv run swarm chat "Hello" --model Qwen3-8B-4bit
 uv run swarm jobs submit tasks.jsonl --model Qwen3-8B-4bit --wait -o results.jsonl
 ```
 
-Roadmap: interleaving several requests in the pipeline and group failover (P2), then speculative decoding and continuous batching (P3).
+Roadmap: two-Mac run of the 30B MoE, request interleaving in the pipeline and group failover (P2); more single-Mac speedups such as prefix caching and KV quantization (P3).
 
 ## Benchmarks
 
@@ -59,6 +60,14 @@ Test setup: an M5 MacBook Pro (32 GB, 122 GB/s) and an M4 Mac mini (16 GB, 101 G
 | `kill -9` one Mac and restart the coordinator during a batch | 40/40 succeeded, no task ran twice |
 | `kill -9` a Mac holding 4 tasks | its tasks were picked up again after about 30 s and completed on the other Mac |
 | `kill -9` an agent running as a service | launchd restarted it after 7 s; it re-registered by 11 s |
+
+**Adaptive speculative decoding (M5, Qwen3-8B-4bit with Qwen3-0.6B-4bit as the draft)**
+
+| Load | Batching only | Speculative only | Adaptive |
+|---|---|---|---|
+| One request at a time | 23.4 tok/s | 40.9 tok/s | 48–52 tok/s |
+| 4 concurrent requests (total) | 80.2 tok/s | 40.2 tok/s | 75–81 tok/s |
+| 3 short requests arriving during a long one | — | wait for it to finish | answered in about 1 s |
 
 ## License
 

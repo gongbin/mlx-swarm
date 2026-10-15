@@ -9,6 +9,8 @@ batching and speculative decoding. This wrapper adds what a swarm node needs:
 - the server only ever serves the model it was started with. Stock mlx_lm.server
   loads whatever the request's "model" field names, which would bypass the guard
   and can pull a model from the Hugging Face Hub;
+- with ``--draft-model``, speculative decoding is used while a request runs
+  alone and batching as soon as others arrive (``swarm.adaptive``);
 - it exits when the process that started it (the agent) is gone, so a killed
   agent does not leave an orphan holding the port and the model's memory.
 
@@ -149,8 +151,13 @@ def main(argv: list[str] | None = None) -> None:
             shard = guard_resources(model, fraction, budget, args.min_free_disk_gb)
         except ResourceError as e:
             sys.exit(f"swarm worker (rank {rank}): refusing to load {model}: {e}")
-        # mlx_lm.server.main() already wired the whole recommended working set.
-        mx.set_wired_limit(int(min(budget, shard + 2) * GB))
+        # mlx_lm.server.main() already wired the whole recommended working set,
+        # and every BatchGenerator would do it again; adaptive.install undoes that.
+        wired = int(min(budget, shard + 2) * GB)
+        mx.set_wired_limit(wired)
+        from swarm import adaptive
+
+        adaptive.install(server, wired)
         pin_model(provider)
         logging.info("serving %s (%.1f GB) with memory limit %.1f GB", model, shard, budget)
         serve(host, port, provider, *a, **kw)
